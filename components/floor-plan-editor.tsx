@@ -1,17 +1,35 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Stage, Layer, Rect, Line, Text, Group, Circle, Transformer, Arc } from "react-konva";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import { Stage, Layer, Rect, Line, Text, Group, Circle, Transformer, Arc, Path } from "react-konva";
 import Konva from "konva";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import { Trash2, ZoomIn, ZoomOut, Grid3x3, Maximize2, RotateCw, Square, Pentagon, Check, X, DoorOpen, RectangleHorizontal, MousePointer2, Undo2, Redo2 } from "lucide-react";
+import { Trash2, ZoomIn, ZoomOut, Grid3x3, Maximize2, RotateCw, Square, Pentagon, Check, X, DoorOpen, RectangleHorizontal, MousePointer2, Undo2, Redo2, Armchair, Bed, Bath, ChefHat, Sofa } from "lucide-react";
 import { GRID_CONFIG, CANVAS_CONFIG, ROOM_CONFIGS, ADU_LIMITS, DOOR_CONFIGS, WINDOW_CONFIGS, ROOM_SIZE_HINTS, getSizeComparison } from "@/lib/constants";
 import type { FloorPlan, Room, RoomType, Point, Door, DoorType, Window, WindowType } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// Furniture types
+export type FurnitureType =
+  | "bed-double" | "bed-single"
+  | "sofa-3seat" | "sofa-2seat" | "armchair"
+  | "table-dining" | "table-coffee"
+  | "toilet" | "sink" | "shower" | "bathtub"
+  | "stove" | "refrigerator" | "dishwasher"
+  | "desk" | "chair";
+
+export interface Furniture {
+  id: string;
+  type: FurnitureType;
+  position: Point;
+  rotation: number; // 0, 90, 180, 270
+  width: number;  // in feet
+  height: number; // in feet (depth)
+}
 
 interface FloorPlanEditorProps {
   onPlanChange: (plan: FloorPlan) => void;
@@ -21,14 +39,17 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [doors, setDoors] = useState<Door[]>([]);
   const [windows, setWindows] = useState<Window[]>([]);
+  const [furniture, setFurniture] = useState<Furniture[]>([]);
   const [selectedRoomType, setSelectedRoomType] = useState<RoomType | null>("bedroom");
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedDoorId, setSelectedDoorId] = useState<string | null>(null);
   const [selectedWindowId, setSelectedWindowId] = useState<string | null>(null);
+  const [selectedFurnitureId, setSelectedFurnitureId] = useState<string | null>(null);
   const [drawMode, setDrawMode] = useState<"rectangle" | "polygon">("rectangle");
-  const [placementMode, setPlacementMode] = useState<"select" | "room" | "door" | "window">("select");
+  const [placementMode, setPlacementMode] = useState<"select" | "room" | "door" | "window" | "furniture">("select");
   const [selectedDoorType, setSelectedDoorType] = useState<DoorType>("single");
   const [selectedWindowType, setSelectedWindowType] = useState<WindowType>("standard");
+  const [selectedFurnitureType, setSelectedFurnitureType] = useState<FurnitureType | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPoint, setStartPoint] = useState<Point | null>(null);
   const [currentRect, setCurrentRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
@@ -48,11 +69,13 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     rooms: Room[];
     doors: Door[];
     windows: Window[];
+    furniture: Furniture[];
     aduBoundary: Point[];
   }
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const isUndoingOrRedoing = useRef(false);
+  const MAX_HISTORY = 50; // Limit history to 50 states
 
   const stageRef = useRef<any>(null);
   const transformerRef = useRef<any>(null);
@@ -111,6 +134,102 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
   const snapToGrid = (value: number) => {
     return Math.round(value / gridSize) * gridSize;
+  };
+
+  // Format feet to feet-inches string (8.5 -> "8'-6\"")
+  const formatFeetInches = (feet: number): string => {
+    const wholeFeet = Math.floor(feet);
+    const inches = Math.round((feet - wholeFeet) * 12);
+    if (inches === 0) {
+      return `${wholeFeet}'-0"`;
+    }
+    return `${wholeFeet}'-${inches}"`;
+  };
+
+  // Check if a door/window is on a wall segment (gridline aligned)
+  const isOpeningOnWall = (
+    wallStart: Point,
+    wallEnd: Point,
+    opening: { position: Point; rotation: number; width: number }
+  ): boolean => {
+    const tolerance = 2; // pixels
+    const openingPos = opening.position;
+
+    // Check if wall is horizontal (same Y)
+    if (Math.abs(wallStart.y - wallEnd.y) < tolerance) {
+      // Wall is horizontal - opening must be horizontal and Y-aligned
+      const isHorizontal = opening.rotation % 180 === 0;
+      const yAligned = Math.abs(openingPos.y - wallStart.y) < tolerance;
+      const minX = Math.min(wallStart.x, wallEnd.x);
+      const maxX = Math.max(wallStart.x, wallEnd.x);
+      const xInRange = openingPos.x >= minX - tolerance && openingPos.x <= maxX + tolerance;
+      return isHorizontal && yAligned && xInRange;
+    }
+
+    // Check if wall is vertical (same X)
+    if (Math.abs(wallStart.x - wallEnd.x) < tolerance) {
+      // Wall is vertical - opening must be vertical and X-aligned
+      const isVertical = opening.rotation % 180 === 90;
+      const xAligned = Math.abs(openingPos.x - wallStart.x) < tolerance;
+      const minY = Math.min(wallStart.y, wallEnd.y);
+      const maxY = Math.max(wallStart.y, wallEnd.y);
+      const yInRange = openingPos.y >= minY - tolerance && openingPos.y <= maxY + tolerance;
+      return isVertical && xAligned && yInRange;
+    }
+
+    return false;
+  };
+
+  // Calculate wall segments with openings for a room
+  const calculateWallSegments = (room: Room) => {
+    const segments: Array<{
+      start: Point;
+      end: Point;
+      lengthFeet: number;
+      openings: Array<{ type: 'door' | 'window'; widthFeet: number; position: Point }>;
+      effectiveLengthFeet: number;
+    }> = [];
+
+    for (let i = 0; i < room.vertices.length; i++) {
+      const start = room.vertices[i];
+      const end = room.vertices[(i + 1) % room.vertices.length];
+
+      const lengthPx = Math.sqrt(
+        Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2)
+      );
+      const lengthFeet = lengthPx / pixelsPerFoot;
+
+      // Find all openings on this wall
+      const wallOpenings: Array<{ type: 'door' | 'window'; widthFeet: number; position: Point }> = [];
+
+      // Check doors
+      doors.forEach(door => {
+        if (isOpeningOnWall(start, end, door)) {
+          wallOpenings.push({ type: 'door', widthFeet: door.width, position: door.position });
+        }
+      });
+
+      // Check windows
+      windows.forEach(window => {
+        if (isOpeningOnWall(start, end, window)) {
+          wallOpenings.push({ type: 'window', widthFeet: window.width, position: window.position });
+        }
+      });
+
+      // Calculate effective length
+      const totalOpeningWidth = wallOpenings.reduce((sum, o) => sum + o.widthFeet, 0);
+      const effectiveLengthFeet = lengthFeet - totalOpeningWidth;
+
+      segments.push({
+        start,
+        end,
+        lengthFeet,
+        openings: wallOpenings,
+        effectiveLengthFeet: Math.max(0, effectiveLengthFeet)
+      });
+    }
+
+    return segments;
   };
 
   // Convert stage coordinates (after pan/zoom) to world coordinates (grid space)
@@ -185,6 +304,41 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       // Check if the inset vertex is inside the outer room
       return isPointInPolygon(insetVertex, outerRoom.vertices);
     });
+  };
+
+  // Furniture configurations with standard architectural dimensions
+  const FURNITURE_CONFIG: Record<FurnitureType, {
+    name: string;
+    width: number;   // feet
+    height: number;  // feet (depth)
+    category: "bedroom" | "living" | "bathroom" | "kitchen" | "office";
+    icon: any;
+  }> = {
+    // Bedroom
+    "bed-double": { name: "Double Bed", width: 4.5, height: 6.5, category: "bedroom", icon: Bed },
+    "bed-single": { name: "Single Bed", width: 3, height: 6.5, category: "bedroom", icon: Bed },
+
+    // Living Room
+    "sofa-3seat": { name: "3-Seat Sofa", width: 7, height: 3, category: "living", icon: Sofa },
+    "sofa-2seat": { name: "2-Seat Sofa", width: 5, height: 3, category: "living", icon: Sofa },
+    "armchair": { name: "Armchair", width: 3, height: 3, category: "living", icon: Armchair },
+    "table-dining": { name: "Dining Table", width: 5, height: 3, category: "living", icon: Square },
+    "table-coffee": { name: "Coffee Table", width: 4, height: 2, category: "living", icon: Square },
+
+    // Bathroom
+    "toilet": { name: "Toilet", width: 1.5, height: 2.5, category: "bathroom", icon: Bath },
+    "sink": { name: "Sink", width: 2, height: 1.5, category: "bathroom", icon: Bath },
+    "shower": { name: "Shower", width: 3, height: 3, category: "bathroom", icon: Bath },
+    "bathtub": { name: "Bathtub", width: 5, height: 2.5, category: "bathroom", icon: Bath },
+
+    // Kitchen
+    "stove": { name: "Stove", width: 2.5, height: 2, category: "kitchen", icon: ChefHat },
+    "refrigerator": { name: "Refrigerator", width: 3, height: 2.5, category: "kitchen", icon: Square },
+    "dishwasher": { name: "Dishwasher", width: 2, height: 2, category: "kitchen", icon: Square },
+
+    // Office
+    "desk": { name: "Desk", width: 5, height: 2.5, category: "office", icon: Square },
+    "chair": { name: "Chair", width: 2, height: 2, category: "office", icon: Armchair },
   };
 
   // Calculate effective area accounting for nested rooms
@@ -352,6 +506,36 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     ));
   };
 
+  const deleteFurniture = (furnitureId: string) => {
+    setFurniture(furniture.filter((f) => f.id !== furnitureId));
+    if (selectedFurnitureId === furnitureId) {
+      setSelectedFurnitureId(null);
+    }
+  };
+
+  const rotateSelectedFurniture = () => {
+    if (!selectedFurnitureId) return;
+    setFurniture(furniture.map(f =>
+      f.id === selectedFurnitureId
+        ? { ...f, rotation: (f.rotation + 90) % 360 }
+        : f
+    ));
+  };
+
+  const addFurniture = (type: FurnitureType, position: Point) => {
+    const config = FURNITURE_CONFIG[type];
+    const newFurniture: Furniture = {
+      id: `furniture-${Date.now()}-${Math.random()}`,
+      type,
+      position,
+      rotation: 0,
+      width: config.width,
+      height: config.height,
+    };
+    setFurniture([...furniture, newFurniture]);
+    setSelectedFurnitureId(newFurniture.id);
+  };
+
   const handleMouseDown = (e: any) => {
     // Check if clicking on empty area
     const clickedOnEmpty = e.target === e.target.getStage();
@@ -361,9 +545,19 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       setSelectedDoorId(null);
       setSelectedWindowId(null);
       setSelectedBoundaryPointIndex(null);
+      setSelectedFurnitureId(null);
 
       if (editBoundaryMode) {
         handleAddBoundaryPoint(e);
+      } else if (selectedFurnitureType) {
+        // Furniture placement mode
+        const stage = e.target.getStage();
+        const pointerPosition = stage.getPointerPosition();
+        const world = stageToWorld(pointerPosition);
+        const x = snapToGrid(world.x);
+        const y = snapToGrid(world.y);
+        addFurniture(selectedFurnitureType, { x, y });
+        setSelectedFurnitureType(null); // Clear selection after placement
       } else if (placementMode === "select") {
         // In select mode, just deselect everything (no placement)
         return;
@@ -680,6 +874,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       rooms: JSON.parse(JSON.stringify(rooms)),
       doors: JSON.parse(JSON.stringify(doors)),
       windows: JSON.parse(JSON.stringify(windows)),
+      furniture: JSON.parse(JSON.stringify(furniture)),
       aduBoundary: JSON.parse(JSON.stringify(aduBoundary)),
     };
 
@@ -687,8 +882,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newState);
 
-    // Limit history to 50 states
-    if (newHistory.length > 50) {
+    // Limit history to MAX_HISTORY states
+    if (newHistory.length > MAX_HISTORY) {
       newHistory.shift();
       setHistory(newHistory);
       setHistoryIndex(newHistory.length - 1);
@@ -696,7 +891,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       setHistory(newHistory);
       setHistoryIndex(newHistory.length - 1);
     }
-  }, [rooms, doors, windows, aduBoundary, history, historyIndex]);
+  }, [rooms, doors, windows, furniture, aduBoundary, history, historyIndex]);
 
   // Undo function
   const undo = () => {
@@ -706,8 +901,14 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       setRooms(JSON.parse(JSON.stringify(previousState.rooms)));
       setDoors(JSON.parse(JSON.stringify(previousState.doors)));
       setWindows(JSON.parse(JSON.stringify(previousState.windows)));
+      setFurniture(JSON.parse(JSON.stringify(previousState.furniture)));
       setAduBoundary(JSON.parse(JSON.stringify(previousState.aduBoundary)));
       setHistoryIndex(historyIndex - 1);
+      // Clear selections
+      setSelectedRoomId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setSelectedFurnitureId(null);
       setTimeout(() => {
         isUndoingOrRedoing.current = false;
       }, 100);
@@ -722,15 +923,21 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       setRooms(JSON.parse(JSON.stringify(nextState.rooms)));
       setDoors(JSON.parse(JSON.stringify(nextState.doors)));
       setWindows(JSON.parse(JSON.stringify(nextState.windows)));
+      setFurniture(JSON.parse(JSON.stringify(nextState.furniture)));
       setAduBoundary(JSON.parse(JSON.stringify(nextState.aduBoundary)));
       setHistoryIndex(historyIndex + 1);
+      // Clear selections
+      setSelectedRoomId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setSelectedFurnitureId(null);
       setTimeout(() => {
         isUndoingOrRedoing.current = false;
       }, 100);
     }
   };
 
-  // Save to history when rooms, doors, windows, or boundary change
+  // Save to history when rooms, doors, windows, furniture, or boundary change
   useEffect(() => {
     if (!isUndoingOrRedoing.current) {
       const timeoutId = setTimeout(() => {
@@ -738,7 +945,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       }, 300); // Debounce to avoid saving too frequently
       return () => clearTimeout(timeoutId);
     }
-  }, [rooms, doors, windows, aduBoundary]);
+  }, [rooms, doors, windows, furniture, aduBoundary, saveToHistory]);
 
   // Keyboard shortcuts for undo/redo
   useEffect(() => {
@@ -1190,6 +1397,17 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     Rotate Window 90°
                   </Button>
                 )}
+                {selectedFurnitureId && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={rotateSelectedFurniture}
+                    className="w-full text-[10px] h-7 hover:text-foreground"
+                  >
+                    <RotateCw className="h-3 w-3 mr-1" />
+                    Rotate Furniture 90°
+                  </Button>
+                )}
               </div>
             )}
           </Card>
@@ -1313,30 +1531,36 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
             className={editBoundaryMode ? "cursor-pointer" : isPanning ? "cursor-grabbing" : placementMode === "select" ? "cursor-default" : "cursor-crosshair"}
           >
             <Layer>
-              {/* Grid */}
+              {/* Grid - Architectural standard: every 5th line darker for easy counting */}
               {showGrid &&
                 Array.from({ length: maxCanvasFeet + 1 }).map((_, i) => {
                   const pos = i * gridSize;
+                  const isMajorGridLine = i % 5 === 0;  // Every 5 feet is major
                   return (
                     <Line
                       key={`v-${i}`}
                       points={[pos, 0, pos, displaySize]}
-                      stroke={GRID_CONFIG.GRID_COLOR}
-                      strokeWidth={1 / zoom}
+                      stroke={isMajorGridLine ? "#c0c0c0" : GRID_CONFIG.GRID_COLOR}
+                      strokeWidth={isMajorGridLine ? 1.5 / zoom : 1 / zoom}
+                      opacity={isMajorGridLine ? 0.6 : 0.3}
                       perfectDrawEnabled={false}
+                      listening={false}
                     />
                   );
                 })}
               {showGrid &&
                 Array.from({ length: maxCanvasFeet + 1 }).map((_, i) => {
                   const pos = i * gridSize;
+                  const isMajorGridLine = i % 5 === 0;
                   return (
                     <Line
                       key={`h-${i}`}
                       points={[0, pos, displaySize, pos]}
-                      stroke={GRID_CONFIG.GRID_COLOR}
-                      strokeWidth={1 / zoom}
+                      stroke={isMajorGridLine ? "#c0c0c0" : GRID_CONFIG.GRID_COLOR}
+                      strokeWidth={isMajorGridLine ? 1.5 / zoom : 1 / zoom}
+                      opacity={isMajorGridLine ? 0.6 : 0.3}
                       perfectDrawEnabled={false}
+                      listening={false}
                     />
                   );
                 })}
@@ -1422,8 +1646,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         width={width}
                         height={height}
                         fill={room.color}
-                        stroke={isSelected ? "#961818" : "#ccc"}
-                        strokeWidth={isSelected ? 3 / zoom : 2 / zoom}
+                        stroke={isSelected ? "#961818" : "#444"}
+                        strokeWidth={isSelected ? 4 / zoom : 3 / zoom}
                         draggable={!editBoundaryMode}
                         dragBoundFunc={(pos) => {
                           const snapped = { x: snapToGrid(pos.x), y: snapToGrid(pos.y) };
@@ -1470,8 +1694,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         id={room.id}
                         points={points}
                         fill={room.color}
-                        stroke={isSelected ? "#961818" : "#ccc"}
-                        strokeWidth={isSelected ? 3 / zoom : 2 / zoom}
+                        stroke={isSelected ? "#961818" : "#444"}
+                        strokeWidth={isSelected ? 4 / zoom : 3 / zoom}
                         closed={true}
                         onClick={() => handleRoomClick(room.id)}
                         onTap={() => handleRoomClick(room.id)}
@@ -1579,6 +1803,163 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     </Group>
                   );
                 }
+              })}
+
+              {/* Wall Length Measurements */}
+              {rooms.map((room) => {
+                const segments = calculateWallSegments(room);
+                return segments.map((segment, idx) => {
+                  // Calculate wall midpoint
+                  const midX = (segment.start.x + segment.end.x) / 2;
+                  const midY = (segment.start.y + segment.end.y) / 2;
+
+                  // Determine if wall is horizontal or vertical
+                  const isHorizontal = Math.abs(segment.start.y - segment.end.y) < 2;
+                  const isVertical = Math.abs(segment.start.x - segment.end.x) < 2;
+
+                  // Calculate room centroid to determine which side is "outside"
+                  const centroidY = room.vertices.reduce((sum, v) => sum + v.y, 0) / room.vertices.length;
+                  const centroidX = room.vertices.reduce((sum, v) => sum + v.x, 0) / room.vertices.length;
+                  const isTopWall = midY < centroidY;      // Wall is above room center
+                  const isLeftWall = midX < centroidX;     // Wall is left of room center
+
+                  // Wall label base position (before text offset)
+                  const wallOffsetDist = 15 / zoom;  // Distance from wall line
+                  let wallLabelX = midX;
+                  let wallLabelY = midY;
+
+                  if (isHorizontal) {
+                    // Horizontal wall: place label above (top wall) or below (bottom wall)
+                    wallLabelY = midY + (isTopWall ? -wallOffsetDist : wallOffsetDist);
+                  } else if (isVertical) {
+                    // Vertical wall: place label left (left wall) or right (right wall)
+                    wallLabelX = midX + (isLeftWall ? -wallOffsetDist : wallOffsetDist);
+                  }
+
+                  // Check for collisions between wall label and opening labels
+                  const checkLabelCollision = (openingPos: Point, openingOffset: number) => {
+                    // Collision detection logic:
+                    // Since Text elements don't have explicit width/height, align/verticalAlign
+                    // properties don't affect positioning. Only offsetX/offsetY matter.
+                    // Text is rendered with top-left at (x - offsetX, y - offsetY)
+
+                    // Approximate text dimensions (at zoom=1):
+                    // - "8'-0"" is roughly 35-45px wide, 11-13px tall
+                    // - fontSize scales with zoom, so dimensions scale too
+
+                    const collisionThreshold = 70 / zoom; // Distance along wall threshold
+                    const perpendicularThreshold = 20 / zoom;  // Perpendicular "same level" threshold
+
+                    // Wall label position (after offsetX/offsetY applied)
+                    // Text renders with top-left at (x - offsetX, y - offsetY)
+                    const wallLabelX_final = wallLabelX - 30 / zoom;
+                    const wallLabelY_final = wallLabelY - 6 / zoom;
+
+                    // Opening label position (after text offset)
+                    // Must account for direction (isTopWall/isLeftWall) to match actual rendering
+                    let openingLabelX_final, openingLabelY_final;
+
+                    if (isHorizontal) {
+                      // Horizontal wall: opening label offset vertically
+                      openingLabelX_final = openingPos.x - 25 / zoom;
+                      const offsetY = isTopWall ? -openingOffset : openingOffset;
+                      openingLabelY_final = openingPos.y + offsetY - 6 / zoom;
+                    } else {
+                      // Vertical wall: opening label offset horizontally
+                      const offsetX = isLeftWall ? -openingOffset : openingOffset;
+                      openingLabelX_final = openingPos.x + offsetX - 25 / zoom;
+                      openingLabelY_final = openingPos.y - 6 / zoom;
+                    }
+
+                    // Check collision based on wall orientation
+                    if (isHorizontal) {
+                      // For horizontal walls: labels collide if on same Y level and close in X
+                      const sameYLevel = Math.abs(openingLabelY_final - wallLabelY_final) < perpendicularThreshold;
+                      const closeInX = Math.abs(openingLabelX_final - wallLabelX_final) < collisionThreshold;
+                      return sameYLevel && closeInX;
+                    } else if (isVertical) {
+                      // For vertical walls: labels collide if on same X level and close in Y
+                      const sameXLevel = Math.abs(openingLabelX_final - wallLabelX_final) < perpendicularThreshold;
+                      const closeInY = Math.abs(openingLabelY_final - wallLabelY_final) < collisionThreshold;
+                      return sameXLevel && closeInY;
+                    }
+                    return false;
+                  };
+
+                  return (
+                    <Group key={`wall-${room.id}-${idx}`}>
+                      {/* Wall length label - Architectural standard dimension style */}
+                      {segment.effectiveLengthFeet > 0 && (
+                        <Text
+                          x={wallLabelX}
+                          y={wallLabelY}
+                          text={formatFeetInches(segment.effectiveLengthFeet)}
+                          fontSize={10 / zoom}
+                          fill="#444"
+                          fontFamily="Arial, sans-serif"
+                          align="center"
+                          verticalAlign="middle"
+                          offsetX={30 / zoom}
+                          offsetY={6 / zoom}
+                          listening={false}
+                          rotation={isVertical ? 90 : 0}
+                        />
+                      )}
+
+                      {/* Opening width labels */}
+                      {segment.openings.map((opening, oIdx) => {
+                        // Opening label positioning logic:
+                        // 1. Start at opening center position
+                        // 2. Offset in same direction as wall label (outside room)
+                        // 3. If collision detected, increase offset distance to avoid overlap
+
+                        const baseOffsetDist = 18 / zoom;  // Normal distance from wall
+
+                        // Detect collision BEFORE calculating final position
+                        const hasCollision = segment.effectiveLengthFeet > 0 &&
+                                           checkLabelCollision(opening.position, baseOffsetDist);
+
+                        // Increase offset if collision detected (2.5x = ~45px at zoom=1)
+                        const finalOffset = hasCollision ? baseOffsetDist * 2.5 : baseOffsetDist;
+
+                        // Calculate final label position (same direction as wall label)
+                        let labelX = opening.position.x;
+                        let labelY = opening.position.y;
+
+                        if (isHorizontal) {
+                          // Horizontal wall: offset vertically in same direction as wall label
+                          // Top wall: both labels go up (negative Y)
+                          // Bottom wall: both labels go down (positive Y)
+                          labelY = opening.position.y + (isTopWall ? -finalOffset : finalOffset);
+                        } else if (isVertical) {
+                          // Vertical wall: offset horizontally in same direction as wall label
+                          // Left wall: both labels go left (negative X)
+                          // Right wall: both labels go right (positive X)
+                          labelX = opening.position.x + (isLeftWall ? -finalOffset : finalOffset);
+                        }
+
+                        return (
+                          <Text
+                            key={`opening-${room.id}-${idx}-${oIdx}`}
+                            x={labelX}
+                            y={labelY}
+                            text={formatFeetInches(opening.widthFeet)}
+                            fontSize={9 / zoom}
+                            fill="#961818"
+                            fontFamily="Arial, sans-serif"
+                            fontStyle="bold"
+                            align="center"
+                            verticalAlign="middle"
+                            offsetX={25 / zoom}
+                            offsetY={6 / zoom}
+                            listening={false}
+                            rotation={isVertical ? 90 : 0}
+                          />
+                        );
+                      })}
+                    </Group>
+                  );
+                });
               })}
 
               {/* Current Drawing Rectangle */}
@@ -1871,6 +2252,270 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                   </Group>
                 );
               })}
+
+              {/* Furniture */}
+              {furniture.map((item) => {
+                const isSelected = selectedFurnitureId === item.id;
+                const config = FURNITURE_CONFIG[item.type];
+                const furnitureWidthPx = item.width * pixelsPerFoot;
+                const furnitureHeightPx = item.height * pixelsPerFoot;
+
+                return (
+                  <Group
+                    key={item.id}
+                    x={item.position.x}
+                    y={item.position.y}
+                    rotation={item.rotation}
+                    draggable={!editBoundaryMode}
+                    dragBoundFunc={(pos) => {
+                      const snappedX = snapToGrid(pos.x);
+                      const snappedY = snapToGrid(pos.y);
+                      return constrainToCanvas({ x: snappedX, y: snappedY });
+                    }}
+                    onDragEnd={(e) => {
+                      const group = e.target;
+                      const newX = snapToGrid(group.x());
+                      const newY = snapToGrid(group.y());
+                      setFurniture(furniture.map(f =>
+                        f.id === item.id ? { ...f, position: { x: newX, y: newY } } : f
+                      ));
+                    }}
+                    onClick={(e) => {
+                      e.cancelBubble = true;
+                      setSelectedFurnitureId(item.id);
+                    }}
+                    onTap={(e) => {
+                      e.cancelBubble = true;
+                      setSelectedFurnitureId(item.id);
+                    }}
+                  >
+                    {/* Base rectangle for all furniture */}
+                    <Rect
+                      x={-furnitureWidthPx / 2}
+                      y={-furnitureHeightPx / 2}
+                      width={furnitureWidthPx}
+                      height={furnitureHeightPx}
+                      fill={isSelected ? "#961818" : "#e5e5e5"}
+                      stroke={isSelected ? "#961818" : "#737373"}
+                      strokeWidth={2 / zoom}
+                      cornerRadius={2 / zoom}
+                    />
+
+                    {/* Type-specific details */}
+                    {/* Beds - with pillow indicator */}
+                    {(item.type === "bed-double" || item.type === "bed-single") && (
+                      <>
+                        <Rect
+                          x={-furnitureWidthPx / 2 + 3}
+                          y={-furnitureHeightPx / 2 + 3}
+                          width={furnitureWidthPx - 6}
+                          height={furnitureHeightPx * 0.25}
+                          fill="#ffffff"
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                        />
+                      </>
+                    )}
+
+                    {/* Sofas - with cushion lines */}
+                    {(item.type === "sofa-3seat" || item.type === "sofa-2seat") && (
+                      <>
+                        <Line
+                          points={[
+                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.33, -furnitureHeightPx / 2 + 5,
+                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.33, furnitureHeightPx / 2 - 5,
+                          ]}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                        />
+                        <Line
+                          points={[
+                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.66, -furnitureHeightPx / 2 + 5,
+                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.66, furnitureHeightPx / 2 - 5,
+                          ]}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                        />
+                      </>
+                    )}
+
+                    {/* Toilet - with bowl circle */}
+                    {item.type === "toilet" && (
+                      <>
+                        <Circle
+                          x={0}
+                          y={furnitureHeightPx * 0.15}
+                          radius={Math.min(furnitureWidthPx, furnitureHeightPx) * 0.3}
+                          fill="#ffffff"
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                        />
+                        <Rect
+                          x={-furnitureWidthPx * 0.3}
+                          y={-furnitureHeightPx / 2 + 5}
+                          width={furnitureWidthPx * 0.6}
+                          height={furnitureHeightPx * 0.25}
+                          fill="#ffffff"
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                        />
+                      </>
+                    )}
+
+                    {/* Sink - with basin circle */}
+                    {item.type === "sink" && (
+                      <Circle
+                        x={0}
+                        y={0}
+                        radius={Math.min(furnitureWidthPx, furnitureHeightPx) * 0.3}
+                        fill="#B0E0E6"
+                        stroke="#737373"
+                        strokeWidth={1 / zoom}
+                        listening={false}
+                      />
+                    )}
+
+                    {/* Shower - with corner drain */}
+                    {item.type === "shower" && (
+                      <>
+                        <Rect
+                          x={-furnitureWidthPx / 2 + 3}
+                          y={-furnitureHeightPx / 2 + 3}
+                          width={furnitureWidthPx - 6}
+                          height={furnitureHeightPx - 6}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          fill="transparent"
+                        />
+                        <Circle
+                          x={furnitureWidthPx / 2 - 10}
+                          y={furnitureHeightPx / 2 - 10}
+                          radius={3 / zoom}
+                          fill="#737373"
+                          listening={false}
+                        />
+                      </>
+                    )}
+
+                    {/* Bathtub - with oval shape */}
+                    {item.type === "bathtub" && (
+                      <Rect
+                        x={-furnitureWidthPx / 2 + 5}
+                        y={-furnitureHeightPx / 2 + 5}
+                        width={furnitureWidthPx - 10}
+                        height={furnitureHeightPx - 10}
+                        fill="#B0E0E6"
+                        stroke="#737373"
+                        strokeWidth={1 / zoom}
+                        cornerRadius={furnitureHeightPx / 4}
+                        listening={false}
+                        opacity={0.5}
+                      />
+                    )}
+
+                    {/* Stove - with burners */}
+                    {item.type === "stove" && (
+                      <>
+                        <Circle
+                          x={-furnitureWidthPx * 0.25}
+                          y={-furnitureHeightPx * 0.25}
+                          radius={8 / zoom}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          fill="transparent"
+                        />
+                        <Circle
+                          x={furnitureWidthPx * 0.25}
+                          y={-furnitureHeightPx * 0.25}
+                          radius={8 / zoom}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          fill="transparent"
+                        />
+                        <Circle
+                          x={-furnitureWidthPx * 0.25}
+                          y={furnitureHeightPx * 0.25}
+                          radius={8 / zoom}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          fill="transparent"
+                        />
+                        <Circle
+                          x={furnitureWidthPx * 0.25}
+                          y={furnitureHeightPx * 0.25}
+                          radius={8 / zoom}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          fill="transparent"
+                        />
+                      </>
+                    )}
+
+                    {/* Refrigerator - with door line */}
+                    {item.type === "refrigerator" && (
+                      <Line
+                        points={[
+                          0, -furnitureHeightPx / 2 + 5,
+                          0, furnitureHeightPx / 2 - 5,
+                        ]}
+                        stroke="#737373"
+                        strokeWidth={1 / zoom}
+                        listening={false}
+                      />
+                    )}
+
+                    {/* Tables - with cross pattern */}
+                    {(item.type === "table-dining" || item.type === "table-coffee") && (
+                      <>
+                        <Line
+                          points={[
+                            -furnitureWidthPx / 2 + 10, -furnitureHeightPx / 2 + 10,
+                            furnitureWidthPx / 2 - 10, furnitureHeightPx / 2 - 10,
+                          ]}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          opacity={0.3}
+                        />
+                        <Line
+                          points={[
+                            furnitureWidthPx / 2 - 10, -furnitureHeightPx / 2 + 10,
+                            -furnitureWidthPx / 2 + 10, furnitureHeightPx / 2 - 10,
+                          ]}
+                          stroke="#737373"
+                          strokeWidth={1 / zoom}
+                          listening={false}
+                          opacity={0.3}
+                        />
+                      </>
+                    )}
+
+                    {/* Label */}
+                    <Text
+                      x={-furnitureWidthPx / 2}
+                      y={0}
+                      width={furnitureWidthPx}
+                      text={config.name}
+                      fontSize={10 / zoom}
+                      fontFamily="Montserrat"
+                      fill={isSelected ? "#ffffff" : "#404040"}
+                      align="center"
+                      verticalAlign="middle"
+                      listening={false}
+                    />
+                  </Group>
+                );
+              })}
             </Layer>
 
             {/* Window Transformer Layer */}
@@ -2075,6 +2720,115 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 />
               </Layer>
             )}
+
+            {/* Scale Indicator and North Arrow - Architectural Standard */}
+            <Layer>
+              {/* Scale Indicator - Bottom Left */}
+              <Group x={20 / zoom} y={displaySize - 60 / zoom}>
+                {/* Scale bar background */}
+                <Rect
+                  x={0}
+                  y={0}
+                  width={120 / zoom}
+                  height={50 / zoom}
+                  fill="white"
+                  opacity={0.9}
+                  cornerRadius={4 / zoom}
+                  shadowColor="black"
+                  shadowBlur={4 / zoom}
+                  shadowOpacity={0.1}
+                  listening={false}
+                />
+
+                {/* Scale text */}
+                <Text
+                  x={10 / zoom}
+                  y={8 / zoom}
+                  text="SCALE"
+                  fontSize={9 / zoom}
+                  fill="#666"
+                  fontStyle="bold"
+                  listening={false}
+                />
+
+                {/* Scale bar - 5 feet */}
+                <Line
+                  points={[10 / zoom, 30 / zoom, 110 / zoom, 30 / zoom]}
+                  stroke="#444"
+                  strokeWidth={2 / zoom}
+                  listening={false}
+                />
+                <Line
+                  points={[10 / zoom, 26 / zoom, 10 / zoom, 34 / zoom]}
+                  stroke="#444"
+                  strokeWidth={2 / zoom}
+                  listening={false}
+                />
+                <Line
+                  points={[110 / zoom, 26 / zoom, 110 / zoom, 34 / zoom]}
+                  stroke="#444"
+                  strokeWidth={2 / zoom}
+                  listening={false}
+                />
+
+                {/* Scale dimension */}
+                <Text
+                  x={60 / zoom}
+                  y={36 / zoom}
+                  text={`5'-0"`}
+                  fontSize={8 / zoom}
+                  fill="#444"
+                  align="center"
+                  offsetX={15 / zoom}
+                  listening={false}
+                />
+              </Group>
+
+              {/* North Arrow - Top Right */}
+              <Group x={displaySize - 60 / zoom} y={20 / zoom}>
+                {/* Background circle */}
+                <Circle
+                  x={30 / zoom}
+                  y={30 / zoom}
+                  radius={28 / zoom}
+                  fill="white"
+                  opacity={0.9}
+                  shadowColor="black"
+                  shadowBlur={4 / zoom}
+                  shadowOpacity={0.1}
+                  listening={false}
+                />
+
+                {/* North arrow */}
+                <Line
+                  points={[
+                    30 / zoom, 12 / zoom,  // Top point
+                    38 / zoom, 38 / zoom,  // Right point
+                    30 / zoom, 30 / zoom,  // Center
+                    22 / zoom, 38 / zoom,  // Left point
+                    30 / zoom, 12 / zoom   // Back to top
+                  ]}
+                  fill="#961818"
+                  stroke="#444"
+                  strokeWidth={1 / zoom}
+                  closed={true}
+                  listening={false}
+                />
+
+                {/* N label */}
+                <Text
+                  x={30 / zoom}
+                  y={44 / zoom}
+                  text="N"
+                  fontSize={12 / zoom}
+                  fill="#444"
+                  fontStyle="bold"
+                  align="center"
+                  offsetX={4 / zoom}
+                  listening={false}
+                />
+              </Group>
+            </Layer>
           </Stage>
         </div>
       </Card>
@@ -2206,6 +2960,161 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     onClick={(e) => {
                       e.stopPropagation();
                       deleteWindow(window.id);
+                    }}
+                    className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* Furniture Library */}
+        <Card className="p-4 space-y-3 shadow-md">
+          <Label className="text-sm font-semibold text-foreground">Furniture Library</Label>
+          <div className="space-y-3">
+            {/* Bedroom */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-2 block">Bedroom</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                  .filter(([, config]) => config.category === "bedroom")
+                  .map(([type, config]) => (
+                    <Button
+                      key={type}
+                      variant={selectedFurnitureType === type ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSelectedFurnitureType(type)}
+                      className="flex flex-col items-center gap-1 h-auto py-2"
+                    >
+                      <config.icon className="h-4 w-4" />
+                      <span className="text-xs">{config.name}</span>
+                    </Button>
+                  ))}
+              </div>
+            </div>
+
+            {/* Bathroom */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-2 block">Bathroom</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                  .filter(([, config]) => config.category === "bathroom")
+                  .map(([type, config]) => (
+                    <Button
+                      key={type}
+                      variant={selectedFurnitureType === type ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSelectedFurnitureType(type)}
+                      className="flex flex-col items-center gap-1 h-auto py-2"
+                    >
+                      <config.icon className="h-4 w-4" />
+                      <span className="text-xs">{config.name}</span>
+                    </Button>
+                  ))}
+              </div>
+            </div>
+
+            {/* Kitchen */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-2 block">Kitchen</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                  .filter(([_, config]) => config.category === "kitchen")
+                  .map(([type, config]) => (
+                    <Button
+                      key={type}
+                      variant={selectedFurnitureType === type ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSelectedFurnitureType(type)}
+                      className="flex flex-col items-center gap-1 h-auto py-2"
+                    >
+                      <config.icon className="h-4 w-4" />
+                      <span className="text-xs">{config.name}</span>
+                    </Button>
+                  ))}
+              </div>
+            </div>
+
+            {/* Living Room */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-2 block">Living Room</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                  .filter(([_, config]) => config.category === "living")
+                  .map(([type, config]) => (
+                    <Button
+                      key={type}
+                      variant={selectedFurnitureType === type ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSelectedFurnitureType(type)}
+                      className="flex flex-col items-center gap-1 h-auto py-2"
+                    >
+                      <config.icon className="h-4 w-4" />
+                      <span className="text-xs">{config.name}</span>
+                    </Button>
+                  ))}
+              </div>
+            </div>
+
+            {/* Office */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-2 block">Office</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                  .filter(([_, config]) => config.category === "office")
+                  .map(([type, config]) => (
+                    <Button
+                      key={type}
+                      variant={selectedFurnitureType === type ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSelectedFurnitureType(type)}
+                      className="flex flex-col items-center gap-1 h-auto py-2"
+                    >
+                      <config.icon className="h-4 w-4" />
+                      <span className="text-xs">{config.name}</span>
+                    </Button>
+                  ))}
+              </div>
+            </div>
+
+            {selectedFurnitureType && (
+              <div className="text-xs text-muted-foreground p-2 bg-accent/50 rounded-md">
+                Click on the canvas to place {FURNITURE_CONFIG[selectedFurnitureType].name}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* Furniture List */}
+        {furniture.length > 0 && (
+          <Card className="p-4 space-y-3 shadow-md">
+            <Label className="text-sm font-semibold text-foreground">Furniture ({furniture.length})</Label>
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {furniture.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setSelectedFurnitureId(item.id)}
+                  className={cn(
+                    "flex items-center justify-between p-2 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.02] transition-all cursor-pointer",
+                    selectedFurnitureId === item.id && "ring-2 ring-primary shadow-md scale-[1.02]"
+                  )}
+                >
+                  <div className="flex items-center gap-2 flex-1">
+                    {React.createElement(FURNITURE_CONFIG[item.type].icon, { className: "h-4 w-4" })}
+                    <div className="text-xs">
+                      <div className="font-medium">{FURNITURE_CONFIG[item.type].name}</div>
+                      <div className="text-muted-foreground">{item.width}×{item.height}ft</div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteFurniture(item.id);
                     }}
                     className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
                   >
