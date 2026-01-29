@@ -13,6 +13,7 @@ interface EditorRoom {
   vertices: Array<{ x: number; y: number }>
   area: number
   rotation?: number
+  description?: string  // For "other" room type
 }
 
 interface EditorDoor {
@@ -60,17 +61,56 @@ interface EditorData {
 const DEFAULT_PIXELS_PER_FOOT = 100
 
 /**
+ * Calculate bounding box dimensions from vertices
+ */
+function calculateBoundingBox(vertices: Array<{ x: number; y: number }>, pixelsPerFoot: number): { widthFeet: number; heightFeet: number } {
+  if (vertices.length < 3) return { widthFeet: 0, heightFeet: 0 }
+
+  const xs = vertices.map(v => v.x)
+  const ys = vertices.map(v => v.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+
+  return {
+    widthFeet: Math.round((maxX - minX) / pixelsPerFoot * 10) / 10,  // Round to 1 decimal
+    heightFeet: Math.round((maxY - minY) / pixelsPerFoot * 10) / 10,
+  }
+}
+
+/**
  * Convert editor room data to API format
  */
-function convertRoom(room: EditorRoom): RoomData {
+function convertRoom(room: EditorRoom, pixelsPerFoot: number): RoomData {
+  const { widthFeet, heightFeet } = calculateBoundingBox(room.vertices, pixelsPerFoot)
+
   return {
     name: room.name,
     type: room.type as RoomData["type"],
+    description: room.description,  // Pass through description for "other" type
     color: room.color,
     vertices: room.vertices,
+    widthFeet,
+    heightFeet,
     areaSqFt: room.area,
     rotation: room.rotation ?? 0,
   }
+}
+
+/**
+ * Map frontend door type to API door type
+ * Frontend uses "opening", API expects "open_passage"
+ */
+function mapDoorType(frontendType: string): DoorData["type"] {
+  const typeMap: Record<string, DoorData["type"]> = {
+    single: "single",
+    double: "double",
+    sliding: "sliding",
+    french: "french",
+    opening: "open_passage", // Frontend "opening" -> API "open_passage"
+  }
+  return typeMap[frontendType] ?? "single"
 }
 
 /**
@@ -78,7 +118,7 @@ function convertRoom(room: EditorRoom): RoomData {
  */
 function convertDoor(door: EditorDoor): DoorData {
   return {
-    type: door.type as DoorData["type"],
+    type: mapDoorType(door.type),
     x: door.x,
     y: door.y,
     widthFeet: door.width,
@@ -197,7 +237,7 @@ export function convertEditorDataToApi(
     gridSize: pixelsPerFoot,
     aduBoundary: editorData.aduBoundary,
     aduAreaSqFt,
-    rooms: editorData.rooms.map((r) => convertRoom(r)),
+    rooms: editorData.rooms.map((r) => convertRoom(r, pixelsPerFoot)),
     doors: editorData.doors.map(convertDoor),
     windows: editorData.windows.map(convertWindow),
     furniture: editorData.furniture.map(convertFurniture),
@@ -270,7 +310,7 @@ export function convertApiBlueprintToEditor(
     })),
     doors: doors.map((d) => ({
       id: d.id,
-      type: d.type,
+      type: d.type === "open_passage" ? "opening" : d.type, // API "open_passage" -> Frontend "opening"
       x: d.x,
       y: d.y,
       width: d.widthFeet,

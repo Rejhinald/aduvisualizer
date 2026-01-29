@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20" width="40" height="20" fill="none" preserveAspectRatio="none">
+  <!-- Coffee table - plan view (4ft x 2ft) -->
+  <rect x="2" y="2" width="36" height="16" rx="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <!-- Table legs -->
+  <circle cx="8" cy="5" r="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+  <circle cx="32" cy="5" r="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+  <circle cx="8" cy="15" r="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+  <circle cx="32" cy="15" r="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+</svg>

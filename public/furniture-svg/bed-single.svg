@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 65" width="30" height="65" fill="none" preserveAspectRatio="none">
+  <!-- Single bed - 3ft x 6.5ft -->
+  <rect x="1" y="1" width="28" height="63" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <!-- Pillow area -->
+  <rect x="3" y="3" width="24" height="12" rx="2" stroke="currentColor" stroke-width="1" fill="none"/>
+  <!-- Single pillow -->
+  <rect x="5" y="5" width="20" height="8" rx="1.5" stroke="currentColor" stroke-width="0.8" fill="none"/>
+  <!-- Mattress division line -->
+  <line x1="3" y1="18" x2="27" y2="18" stroke="currentColor" stroke-width="0.5"/>
+</svg>

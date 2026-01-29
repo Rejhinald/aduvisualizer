@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
-import { Stage, Layer, Rect, Line, Text, Group, Circle, Transformer, Arc } from "react-konva";
+import { Stage, Layer, Rect, Line, Text, Group, Circle, Transformer, Arc, Image as KonvaImage } from "react-konva";
 import type Konva from "konva";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import { Trash2, ZoomIn, ZoomOut, Grid3x3, Maximize2, RotateCw, Square, Pentagon, Check, X, DoorOpen, RectangleHorizontal, MousePointer2, Undo2, Redo2, Armchair, Bed, Bath, ChefHat, Sofa, AlertTriangle, Cloud, CloudOff, Loader2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Trash2, ZoomIn, ZoomOut, Grid3x3, Maximize2, RotateCw, Square, Pentagon, Check, X, DoorOpen, RectangleHorizontal, MousePointer2, Undo2, Redo2, Armchair, Bed, Bath, ChefHat, Sofa, AlertTriangle, Cloud, CloudOff, Loader2, CloudCog } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,6 +24,9 @@ import { GRID_CONFIG, CANVAS_CONFIG, ROOM_CONFIGS, ADU_LIMITS, DOOR_CONFIGS, WIN
 import type { FloorPlan, Room, RoomType, Point, Door, DoorType, Window, WindowType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useWizard } from "@/lib/context/wizard-context";
+import { useActionLogger } from "@/lib/hooks/use-action-logger";
+import * as api from "@/lib/api/client";
+import { RotateCcw, History } from "lucide-react";
 
 // Furniture types
 export type FurnitureType =
@@ -48,7 +52,21 @@ interface FloorPlanEditorProps {
 
 export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   // Wizard context for cloud save
-  const { saveToCloud, isSaving, saveError, lastSavedAt } = useWizard();
+  const { saveToCloud, isSaving, saveError, lastSavedAt, projectId, blueprintId } = useWizard();
+
+  // Action logger for tracking all editor changes
+  const {
+    logMove,
+    logResize,
+    logRotate,
+    logCreate,
+    logDelete,
+    logVertexMove,
+  } = useActionLogger({
+    projectId,
+    blueprintId,
+    enabled: !!projectId, // Only log when we have a project
+  });
 
   const [rooms, setRooms] = useState<Room[]>([]);
   const [doors, setDoors] = useState<Door[]>([]);
@@ -78,6 +96,9 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const [selectedBoundaryPointIndex, setSelectedBoundaryPointIndex] = useState<number | null>(null);
   const [roomDescriptions, setRoomDescriptions] = useState<Map<string, string>>(new Map());
 
+  // Furniture snap mode: "grid" = full grid, "half" = half-grid (center of cells), "free" = no snapping
+  const [furnitureSnapMode, setFurnitureSnapMode] = useState<"grid" | "half" | "free">("half");
+
   // Delete confirmation dialog state
   const [deleteDialog, setDeleteDialog] = useState<{
     open: boolean;
@@ -85,6 +106,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     id: string | null;
     name: string;
   }>({ open: false, type: null, id: null, name: "" });
+
+  // Restore from cloud state
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreDialog, setRestoreDialog] = useState(false);
 
   // Undo/Redo history
   interface HistoryState {
@@ -97,37 +122,44 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const isUndoingOrRedoing = useRef(false);
+  const hasInitializedHistory = useRef(false);
   const MAX_HISTORY = 50; // Limit history to 50 states
 
   const stageRef = useRef<Konva.Stage | null>(null);
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const windowTransformerRef = useRef<Konva.Transformer | null>(null);
-  const doorTransformerRef = useRef<Konva.Transformer | null>(null);
+  const openingTransformerRef = useRef<Konva.Transformer | null>(null);
   const roomRefs = useRef<Map<string, Konva.Rect>>(new Map());
-  const windowRefs = useRef<Map<string, Konva.Group>>(new Map());
-  const doorRefs = useRef<Map<string, Konva.Group>>(new Map());
+  const windowRefs = useRef<Map<string, Konva.Rect>>(new Map());
+  const openingRefs = useRef<Map<string, Konva.Rect>>(new Map());
 
-  // Update window transformer when selection changes or window dimensions change
+  // Refs for buffering drag positions (prevents spazzing during drag)
+  const polygonDragBufferRef = useRef<{ roomId: string; vertexIndex: number; pos: Point } | null>(null);
+
+  // Attach window transformer to selected window
   useEffect(() => {
     if (windowTransformerRef.current && selectedWindowId) {
       const node = windowRefs.current.get(selectedWindowId);
       if (node) {
         windowTransformerRef.current.nodes([node]);
-        windowTransformerRef.current.forceUpdate();
         windowTransformerRef.current.getLayer()?.batchDraw();
       }
+    } else if (windowTransformerRef.current) {
+      windowTransformerRef.current.nodes([]);
     }
-  }, [selectedWindowId, windows]);
+  }, [selectedWindowId]);
 
-  // Update door transformer when selection changes or door dimensions change
+  // Attach opening transformer to selected opening
   useEffect(() => {
-    if (doorTransformerRef.current && selectedDoorId) {
-      const node = doorRefs.current.get(selectedDoorId);
+    const selectedDoor = doors.find(d => d.id === selectedDoorId);
+    if (openingTransformerRef.current && selectedDoorId && selectedDoor?.type === 'opening') {
+      const node = openingRefs.current.get(selectedDoorId);
       if (node) {
-        doorTransformerRef.current.nodes([node]);
-        doorTransformerRef.current.forceUpdate();
-        doorTransformerRef.current.getLayer()?.batchDraw();
+        openingTransformerRef.current.nodes([node]);
+        openingTransformerRef.current.getLayer()?.batchDraw();
       }
+    } else if (openingTransformerRef.current) {
+      openingTransformerRef.current.nodes([]);
     }
   }, [selectedDoorId, doors]);
 
@@ -154,8 +186,87 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     { x: defaultOffset, y: defaultOffset + defaultBoundarySize },
   ]);
 
+  // Auto-save functionality
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isInitialLoadRef = useRef(true);
+  const lastSaveHashRef = useRef<string>("");
+
+  // Generate a hash of current state to detect actual changes
+  const getStateHash = useCallback(() => {
+    return JSON.stringify({
+      rooms: rooms.map(r => ({ id: r.id, vertices: r.vertices, name: r.name, type: r.type })),
+      doors: doors.map(d => ({ id: d.id, position: d.position, width: d.width, rotation: d.rotation, type: d.type })),
+      windows: windows.map(w => ({ id: w.id, position: w.position, width: w.width, rotation: w.rotation })),
+      furniture: furniture.map(f => ({ id: f.id, position: f.position, width: f.width, height: f.height, rotation: f.rotation })),
+      boundary: aduBoundary,
+    });
+  }, [rooms, doors, windows, furniture, aduBoundary]);
+
+  // Debounced auto-save effect
+  useEffect(() => {
+    // Skip initial load
+    if (isInitialLoadRef.current) {
+      isInitialLoadRef.current = false;
+      lastSaveHashRef.current = getStateHash();
+      return;
+    }
+
+    // Skip if auto-save disabled or already saving
+    if (!autoSaveEnabled || isSaving) return;
+
+    // Skip if no actual changes (compare hash)
+    const currentHash = getStateHash();
+    if (currentHash === lastSaveHashRef.current) return;
+
+    // Clear existing timer
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+
+    // Set new debounced save (2 seconds after last change)
+    autoSaveTimerRef.current = setTimeout(async () => {
+      console.log("[AutoSave] Saving changes...");
+      const success = await saveToCloud({
+        rooms,
+        doors,
+        windows,
+        furniture,
+        aduBoundary,
+        pixelsPerFoot,
+        canvasWidth: displaySize,
+        canvasHeight: displaySize,
+      });
+      if (success) {
+        lastSaveHashRef.current = currentHash;
+        console.log("[AutoSave] Saved successfully");
+      }
+    }, 2000);
+
+    // Cleanup
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [rooms, doors, windows, furniture, aduBoundary, autoSaveEnabled, isSaving, saveToCloud, pixelsPerFoot, getStateHash]);
+
   const snapToGrid = (value: number) => {
     return Math.round(value / gridSize) * gridSize;
+  };
+
+  // Snap function for furniture with different modes
+  const snapFurniture = (value: number) => {
+    if (furnitureSnapMode === "free") {
+      return value; // No snapping
+    } else if (furnitureSnapMode === "half") {
+      // Snap to half-grid (center of cells)
+      const halfGrid = gridSize / 2;
+      return Math.round(value / halfGrid) * halfGrid;
+    } else {
+      // Full grid snap
+      return Math.round(value / gridSize) * gridSize;
+    }
   };
 
   // Format feet to feet-inches string (8.5 -> "8'-6\"")
@@ -328,14 +439,191 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     });
   };
 
+  // Get wall segments for a room, excluding areas where open passages exist
+  type WallSegment = { start: Point; end: Point };
+
+  const getWallSegmentsExcludingOpenings = useCallback((roomVertices: Point[], openPassages: Door[]): WallSegment[] => {
+    const segments: WallSegment[] = [];
+    const tolerance = gridSize / 4; // Tolerance for detecting if opening is on wall
+
+    for (let i = 0; i < roomVertices.length; i++) {
+      const start = roomVertices[i];
+      const end = roomVertices[(i + 1) % roomVertices.length];
+
+      // Determine if this is a horizontal or vertical edge
+      const isHorizontalEdge = Math.abs(start.y - end.y) < tolerance;
+      const isVerticalEdge = Math.abs(start.x - end.x) < tolerance;
+
+      // Collect all openings that intersect this edge
+      const edgeOpenings: { cutStart: number; cutEnd: number }[] = [];
+
+      for (const opening of openPassages) {
+        const openingCenterX = opening.position.x;
+        const openingCenterY = opening.position.y;
+        const isOpeningVertical = opening.rotation % 180 === 90;
+        const openingHalfWidth = (opening.width * pixelsPerFoot) / 2;
+
+        if (isHorizontalEdge && !isOpeningVertical) {
+          // Horizontal edge, horizontal opening
+          // Check if opening's Y is on this edge
+          const edgeY = (start.y + end.y) / 2;
+          if (Math.abs(openingCenterY - edgeY) < tolerance) {
+            // Check if opening's X is within this edge's X range
+            const minX = Math.min(start.x, end.x);
+            const maxX = Math.max(start.x, end.x);
+            if (openingCenterX >= minX - tolerance && openingCenterX <= maxX + tolerance) {
+              edgeOpenings.push({
+                cutStart: openingCenterX - openingHalfWidth,
+                cutEnd: openingCenterX + openingHalfWidth,
+              });
+            }
+          }
+        } else if (isVerticalEdge && isOpeningVertical) {
+          // Vertical edge, vertical opening
+          // Check if opening's X is on this edge
+          const edgeX = (start.x + end.x) / 2;
+          if (Math.abs(openingCenterX - edgeX) < tolerance) {
+            // Check if opening's Y is within this edge's Y range
+            const minY = Math.min(start.y, end.y);
+            const maxY = Math.max(start.y, end.y);
+            if (openingCenterY >= minY - tolerance && openingCenterY <= maxY + tolerance) {
+              edgeOpenings.push({
+                cutStart: openingCenterY - openingHalfWidth,
+                cutEnd: openingCenterY + openingHalfWidth,
+              });
+            }
+          }
+        }
+      }
+
+      if (edgeOpenings.length === 0) {
+        // No openings on this edge, draw the full edge
+        segments.push({ start, end });
+      } else {
+        // Sort openings and merge overlapping ones
+        edgeOpenings.sort((a, b) => a.cutStart - b.cutStart);
+
+        // Create segments that exclude the openings
+        if (isHorizontalEdge) {
+          const edgeStart = Math.min(start.x, end.x);
+          const edgeEnd = Math.max(start.x, end.x);
+          const y = start.y;
+
+          let currentPos = edgeStart;
+          for (const opening of edgeOpenings) {
+            if (opening.cutStart > currentPos) {
+              segments.push({
+                start: { x: currentPos, y },
+                end: { x: Math.min(opening.cutStart, edgeEnd), y },
+              });
+            }
+            currentPos = Math.max(currentPos, opening.cutEnd);
+          }
+          // Add remaining segment after last opening
+          if (currentPos < edgeEnd) {
+            segments.push({
+              start: { x: currentPos, y },
+              end: { x: edgeEnd, y },
+            });
+          }
+        } else if (isVerticalEdge) {
+          const edgeStart = Math.min(start.y, end.y);
+          const edgeEnd = Math.max(start.y, end.y);
+          const x = start.x;
+
+          let currentPos = edgeStart;
+          for (const opening of edgeOpenings) {
+            if (opening.cutStart > currentPos) {
+              segments.push({
+                start: { x, y: currentPos },
+                end: { x, y: Math.min(opening.cutStart, edgeEnd) },
+              });
+            }
+            currentPos = Math.max(currentPos, opening.cutEnd);
+          }
+          // Add remaining segment after last opening
+          if (currentPos < edgeEnd) {
+            segments.push({
+              start: { x, y: currentPos },
+              end: { x, y: edgeEnd },
+            });
+          }
+        } else {
+          // Diagonal edge - just draw it (openings on diagonal walls are uncommon)
+          segments.push({ start, end });
+        }
+      }
+    }
+
+    return segments;
+  }, [gridSize, pixelsPerFoot]);
+
+  // Load furniture SVG images
+  const [furnitureImages, setFurnitureImages] = useState<Record<FurnitureType, HTMLImageElement | null>>({
+    "bed-double": null,
+    "bed-single": null,
+    "sofa-3seat": null,
+    "sofa-2seat": null,
+    "armchair": null,
+    "table-dining": null,
+    "table-coffee": null,
+    "toilet": null,
+    "sink": null,
+    "shower": null,
+    "bathtub": null,
+    "stove": null,
+    "refrigerator": null,
+    "dishwasher": null,
+    "desk": null,
+    "chair": null,
+  });
+
+  useEffect(() => {
+    const furnitureTypes: FurnitureType[] = [
+      "bed-double", "bed-single", "sofa-3seat", "sofa-2seat", "armchair",
+      "table-dining", "table-coffee", "toilet", "sink", "shower", "bathtub",
+      "stove", "refrigerator", "dishwasher", "desk", "chair"
+    ];
+
+    // Load SVGs and modify them for proper scaling
+    furnitureTypes.forEach(async (type) => {
+      try {
+        const response = await fetch(`/furniture-svg/${type}.svg`);
+        const svgText = await response.text();
+
+        // Replace existing width/height with 100% for proper scaling in Konva
+        const modifiedSvg = svgText
+          .replace(/width="[^"]*"/, 'width="100%"')
+          .replace(/height="[^"]*"/, 'height="100%"');
+
+        // Create a blob URL from the modified SVG
+        const blob = new Blob([modifiedSvg], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+
+        const img = new window.Image();
+        img.onload = () => {
+          setFurnitureImages(prev => ({ ...prev, [type]: img }));
+          URL.revokeObjectURL(url);
+        };
+        img.onerror = () => {
+          console.error(`Failed to load furniture SVG image: ${type}`);
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      } catch (error) {
+        console.error(`Failed to fetch furniture SVG: ${type}`, error);
+      }
+    });
+  }, []);
+
   // Furniture configurations with standard architectural dimensions
-  const FURNITURE_CONFIG: Record<FurnitureType, {
+  const FURNITURE_CONFIG = React.useMemo<Record<FurnitureType, {
     name: string;
     width: number;   // feet
     height: number;  // feet (depth)
     category: "bedroom" | "living" | "bathroom" | "kitchen" | "office";
     icon: React.ElementType;
-  }> = {
+  }>>(() => ({
     // Bedroom
     "bed-double": { name: "Double Bed", width: 4.5, height: 6.5, category: "bedroom", icon: Bed },
     "bed-single": { name: "Single Bed", width: 3, height: 6.5, category: "bedroom", icon: Bed },
@@ -361,7 +649,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     // Office
     "desk": { name: "Desk", width: 5, height: 2.5, category: "office", icon: Square },
     "chair": { name: "Chair", width: 2, height: 2, category: "office", icon: Armchair },
-  };
+  }), []);
 
   // Calculate effective area accounting for nested rooms
   const calculateEffectiveArea = (room: Room): number => {
@@ -463,7 +751,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setAduBoundary(newBoundary);
   };
 
-  const handleRemoveBoundaryPoint = (index: number) => {
+  const handleRemoveBoundaryPoint = useCallback((index: number) => {
     if (aduBoundary.length <= 3) {
       alert("ADU boundary must have at least 3 points");
       return;
@@ -471,6 +759,25 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     const newBoundary = aduBoundary.filter((_, i) => i !== index);
     setAduBoundary(newBoundary);
     setSelectedBoundaryPointIndex(null);
+  }, [aduBoundary]);
+
+  const handleRemoveRoomVertex = (roomId: string, vertexIndex: number) => {
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) return;
+
+    if (room.vertices.length <= 3) {
+      // Can't have less than 3 vertices for a valid polygon
+      return;
+    }
+
+    const newVertices = room.vertices.filter((_, i) => i !== vertexIndex);
+    const newArea = calculatePolygonArea(newVertices);
+
+    setRooms(rooms.map(r =>
+      r.id === roomId
+        ? { ...r, vertices: newVertices, area: Math.round(newArea) }
+        : r
+    ));
   };
 
   const handlePlaceDoor = (position: Point) => {
@@ -512,23 +819,23 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   };
 
-  const rotateSelectedDoor = () => {
+  const rotateSelectedDoor = useCallback(() => {
     if (!selectedDoorId) return;
     setDoors(doors.map(d =>
       d.id === selectedDoorId
         ? { ...d, rotation: (d.rotation + 90) % 360 }
         : d
     ));
-  };
+  }, [selectedDoorId, doors]);
 
-  const rotateSelectedWindow = () => {
+  const rotateSelectedWindow = useCallback(() => {
     if (!selectedWindowId) return;
     setWindows(windows.map(w =>
       w.id === selectedWindowId
         ? { ...w, rotation: (w.rotation + 90) % 360 }
         : w
     ));
-  };
+  }, [selectedWindowId, windows]);
 
   const deleteFurniture = (furnitureId: string) => {
     setFurniture(furniture.filter((f) => f.id !== furnitureId));
@@ -537,14 +844,119 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   };
 
-  const rotateSelectedFurniture = () => {
+  const rotateSelectedFurniture = useCallback(() => {
     if (!selectedFurnitureId) return;
     setFurniture(furniture.map(f =>
       f.id === selectedFurnitureId
         ? { ...f, rotation: (f.rotation + 90) % 360 }
         : f
     ));
-  };
+  }, [selectedFurnitureId, furniture]);
+
+  // Restore blueprint from cloud
+  const restoreFromCloud = useCallback(async () => {
+    if (!blueprintId) {
+      console.warn("No blueprint ID available to restore");
+      return;
+    }
+
+    setIsRestoring(true);
+    try {
+      const response = await api.getBlueprint(blueprintId);
+      const { blueprint, rooms: apiRooms, doors: apiDoors, windows: apiWindows, furniture: apiFurniture } = response.data;
+
+      // Convert API data to editor format
+      const restoredRooms: Room[] = (apiRooms as Array<{
+        id: string;
+        name: string;
+        type: string;
+        color?: string;
+        vertices: Array<{ x: number; y: number }>;
+        areaSqFt: number;
+      }>).map(r => ({
+        id: r.id,
+        name: r.name,
+        type: r.type as RoomType,
+        color: r.color ?? "#a8d5e5",
+        vertices: r.vertices,
+        area: r.areaSqFt,
+      }));
+
+      const restoredDoors: Door[] = (apiDoors as Array<{
+        id: string;
+        type: string;
+        x: number;
+        y: number;
+        widthFeet: number;
+        rotation?: number;
+      }>).map(d => ({
+        id: d.id,
+        type: (d.type === "open_passage" ? "opening" : d.type) as DoorType,
+        position: { x: d.x, y: d.y },
+        width: d.widthFeet,
+        rotation: d.rotation ?? 0,
+      }));
+
+      const restoredWindows: Window[] = (apiWindows as Array<{
+        id: string;
+        type: string;
+        x: number;
+        y: number;
+        widthFeet: number;
+        heightFeet: number;
+        rotation?: number;
+      }>).map(w => ({
+        id: w.id,
+        type: w.type as WindowType,
+        position: { x: w.x, y: w.y },
+        width: w.widthFeet,
+        height: w.heightFeet,
+        rotation: w.rotation ?? 0,
+      }));
+
+      const restoredFurniture: Furniture[] = (apiFurniture as Array<{
+        id: string;
+        type: string;
+        x: number;
+        y: number;
+        widthFeet: number;
+        heightFeet: number;
+        rotation?: number;
+      }>).map(f => ({
+        id: f.id,
+        type: f.type as FurnitureType,
+        position: { x: f.x, y: f.y },
+        width: f.widthFeet,
+        height: f.heightFeet,
+        rotation: f.rotation ?? 0,
+      }));
+
+      // Update all state
+      setRooms(restoredRooms);
+      setDoors(restoredDoors);
+      setWindows(restoredWindows);
+      setFurniture(restoredFurniture);
+      setAduBoundary(blueprint.aduBoundary);
+
+      // Clear selections
+      setSelectedRoomId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setSelectedFurnitureId(null);
+
+      console.log("Blueprint restored successfully:", {
+        rooms: restoredRooms.length,
+        doors: restoredDoors.length,
+        windows: restoredWindows.length,
+        furniture: restoredFurniture.length,
+      });
+    } catch (error) {
+      console.error("Failed to restore blueprint:", error);
+    } finally {
+      setIsRestoring(false);
+      setRestoreDialog(false);
+    }
+  }, [blueprintId]);
 
   const addFurniture = (type: FurnitureType, position: Point) => {
     const config = FURNITURE_CONFIG[type];
@@ -580,8 +992,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         const pointerPosition = stage.getPointerPosition();
         if (!pointerPosition) return;
         const world = stageToWorld(pointerPosition);
-        const x = snapToGrid(world.x);
-        const y = snapToGrid(world.y);
+        const x = snapFurniture(world.x);
+        const y = snapFurniture(world.y);
         addFurniture(selectedFurnitureType, { x, y });
         // Keep the furniture type selected for easy multiple placements
       } else if (placementMode === "select") {
@@ -695,6 +1107,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       };
 
       setRooms([...rooms, newRoom]);
+      // Log the create action
+      logCreate("room", newRoom.id, { type: newRoom.type, name: newRoom.name, vertices: newRoom.vertices, area: newRoom.area });
     }
 
     setIsDrawing(false);
@@ -721,16 +1135,18 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     };
 
     setRooms([...rooms, newRoom]);
+    // Log the create action
+    logCreate("room", newRoom.id, { type: newRoom.type, name: newRoom.name, vertices: newRoom.vertices, area: newRoom.area });
 
     // Reset polygon drawing
     setIsDrawing(false);
     setPolygonPoints([]);
   };
 
-  const cancelPolygon = () => {
+  const cancelPolygon = useCallback(() => {
     setIsDrawing(false);
     setPolygonPoints([]);
-  };
+  }, []);
 
   const handleRoomClick = (roomId: string) => {
     // Don't allow room selection during polygon drawing
@@ -747,6 +1163,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
     const x = snapToGrid(node.x());
     const y = snapToGrid(node.y());
+    const previousPosition = { x: room.vertices[0].x, y: room.vertices[0].y };
 
     if (room.vertices.length === 4) {
       // Rectangle room
@@ -769,6 +1186,9 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       }));
 
       node.position({ x, y });
+
+      // Log the move action
+      logMove("room", roomId, previousPosition, { x, y });
     }
   };
 
@@ -776,6 +1196,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     const node = e.target;
     const scaleX = node.scaleX();
     const scaleY = node.scaleY();
+
+    const room = rooms.find(r => r.id === roomId);
+    const previousWidth = room ? room.vertices[1].x - room.vertices[0].x : 0;
+    const previousHeight = room ? room.vertices[2].y - room.vertices[0].y : 0;
 
     // Snap dimensions to grid
     const newWidth = snapToGrid(node.width() * scaleX);
@@ -788,10 +1212,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     const heightFeet = newHeight / pixelsPerFoot;
     const area = widthFeet * heightFeet;
 
-    setRooms(rooms.map((room) => {
-      if (room.id === roomId) {
+    setRooms(rooms.map((r) => {
+      if (r.id === roomId) {
         return {
-          ...room,
+          ...r,
           vertices: [
             { x, y },
             { x: x + newWidth, y },
@@ -801,7 +1225,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           area: Math.round(area),
         };
       }
-      return room;
+      return r;
     }));
 
     // Reset scale
@@ -810,6 +1234,15 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     node.width(newWidth);
     node.height(newHeight);
     node.position({ x, y });
+
+    // Log the resize action
+    logResize(
+      "room",
+      roomId,
+      { width: previousWidth, height: previousHeight },
+      { width: newWidth, height: newHeight },
+      { x, y }
+    );
   };
 
   const rotateSelectedRoom = () => {
@@ -840,9 +1273,14 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   };
 
   const deleteRoom = (roomId: string) => {
+    const room = rooms.find(r => r.id === roomId);
     setRooms(rooms.filter((r) => r.id !== roomId));
     if (selectedRoomId === roomId) {
       setSelectedRoomId(null);
+    }
+    // Log the delete action
+    if (room) {
+      logDelete("room", roomId, { type: room.type, name: room.name, vertices: room.vertices, area: room.area });
     }
   };
 
@@ -1028,31 +1466,245 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   };
 
+  // Initialize history with first state on mount
+  useEffect(() => {
+    if (!hasInitializedHistory.current && history.length === 0) {
+      hasInitializedHistory.current = true;
+      const initialState: HistoryState = {
+        rooms: JSON.parse(JSON.stringify(rooms)),
+        doors: JSON.parse(JSON.stringify(doors)),
+        windows: JSON.parse(JSON.stringify(windows)),
+        furniture: JSON.parse(JSON.stringify(furniture)),
+        aduBoundary: JSON.parse(JSON.stringify(aduBoundary)),
+      };
+      setHistory([initialState]);
+      setHistoryIndex(0);
+    }
+  }, [rooms, doors, windows, furniture, aduBoundary, history.length]);
+
   // Save to history when rooms, doors, windows, furniture, or boundary change
   useEffect(() => {
-    if (!isUndoingOrRedoing.current) {
-      const timeoutId = setTimeout(() => {
-        saveToHistory();
-      }, 300); // Debounce to avoid saving too frequently
-      return () => clearTimeout(timeoutId);
-    }
+    // Skip if not initialized yet or if undoing/redoing
+    if (!hasInitializedHistory.current || isUndoingOrRedoing.current) return;
+
+    const timeoutId = setTimeout(() => {
+      saveToHistory();
+    }, 300); // Debounce to avoid saving too frequently
+    return () => clearTimeout(timeoutId);
   }, [rooms, doors, windows, furniture, aduBoundary, saveToHistory]);
 
-  // Keyboard shortcuts for undo/redo
+  // Comprehensive keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      // Don't trigger shortcuts when typing in input fields
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+
+      // Undo: Ctrl+Z
+      if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        return;
+      }
+
+      // Redo: Ctrl+Y or Ctrl+Shift+Z
+      if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
         e.preventDefault();
         redo();
+        return;
+      }
+
+      // Save: Ctrl+S
+      if ((e.ctrlKey || e.metaKey) && key === 's') {
+        e.preventDefault();
+        if (!isSaving) {
+          saveToCloud({
+            rooms: rooms.map(r => ({ id: r.id, name: r.name, type: r.type, color: r.color, vertices: r.vertices, area: r.area, rotation: 0 })),
+            doors: doors,
+            windows: windows,
+            furniture: furniture,
+            aduBoundary,
+            pixelsPerFoot,
+            canvasWidth: displaySize,
+            canvasHeight: displaySize,
+          });
+        }
+        return;
+      }
+
+      // Delete: Delete or Backspace - delete selected item or point
+      if (key === 'delete' || key === 'backspace') {
+        e.preventDefault();
+        // Delete selected boundary point (in edit boundary mode)
+        if (editBoundaryMode && selectedBoundaryPointIndex !== null) {
+          handleRemoveBoundaryPoint(selectedBoundaryPointIndex);
+          return;
+        }
+        // Delete selected room/door/window/furniture
+        if (selectedRoomId) {
+          const room = rooms.find(r => r.id === selectedRoomId);
+          if (room) {
+            setDeleteDialog({ open: true, type: "room", id: selectedRoomId, name: room.name });
+          }
+        } else if (selectedDoorId) {
+          const door = doors.find(d => d.id === selectedDoorId);
+          if (door) {
+            setDeleteDialog({ open: true, type: "door", id: selectedDoorId, name: DOOR_CONFIGS[door.type].label });
+          }
+        } else if (selectedWindowId) {
+          const win = windows.find(w => w.id === selectedWindowId);
+          if (win) {
+            setDeleteDialog({ open: true, type: "window", id: selectedWindowId, name: WINDOW_CONFIGS[win.type].label });
+          }
+        } else if (selectedFurnitureId) {
+          const furn = furniture.find(f => f.id === selectedFurnitureId);
+          if (furn) {
+            setDeleteDialog({ open: true, type: "furniture", id: selectedFurnitureId, name: FURNITURE_CONFIG[furn.type].name });
+          }
+        }
+        return;
+      }
+
+      // Escape: Deselect all / Cancel drawing
+      if (key === 'escape') {
+        e.preventDefault();
+        setSelectedRoomId(null);
+        setSelectedDoorId(null);
+        setSelectedWindowId(null);
+        setSelectedFurnitureId(null);
+        setSelectedBoundaryPointIndex(null);
+        if (isDrawing) {
+          cancelPolygon();
+        }
+        return;
+      }
+
+      // R: Rotate selected item 90 degrees
+      if (key === 'r' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        if (selectedDoorId) {
+          rotateSelectedDoor();
+        } else if (selectedWindowId) {
+          rotateSelectedWindow();
+        } else if (selectedFurnitureId) {
+          rotateSelectedFurniture();
+        }
+        return;
+      }
+
+      // G: Toggle grid
+      if (key === 'g' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setShowGrid(!showGrid);
+        return;
+      }
+
+      // Arrow keys: Nudge selected item
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+        e.preventDefault();
+        const nudgeAmount = e.shiftKey ? gridSize : gridSize / 2; // Shift for larger nudge
+        const delta = {
+          x: key === 'arrowleft' ? -nudgeAmount : key === 'arrowright' ? nudgeAmount : 0,
+          y: key === 'arrowup' ? -nudgeAmount : key === 'arrowdown' ? nudgeAmount : 0,
+        };
+
+        if (selectedRoomId) {
+          setRooms(rooms.map(r =>
+            r.id === selectedRoomId
+              ? { ...r, vertices: r.vertices.map(v => ({ x: v.x + delta.x, y: v.y + delta.y })) }
+              : r
+          ));
+        } else if (selectedDoorId) {
+          setDoors(doors.map(d =>
+            d.id === selectedDoorId
+              ? { ...d, position: { x: d.position.x + delta.x, y: d.position.y + delta.y } }
+              : d
+          ));
+        } else if (selectedWindowId) {
+          setWindows(windows.map(w =>
+            w.id === selectedWindowId
+              ? { ...w, position: { x: w.position.x + delta.x, y: w.position.y + delta.y } }
+              : w
+          ));
+        } else if (selectedFurnitureId) {
+          setFurniture(furniture.map(f =>
+            f.id === selectedFurnitureId
+              ? { ...f, position: { x: f.position.x + delta.x, y: f.position.y + delta.y } }
+              : f
+          ));
+        }
+        return;
+      }
+
+      // Mode shortcuts (only when no modifier keys)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        // V: Select mode (like Photoshop/Figma)
+        if (key === 'v') {
+          e.preventDefault();
+          setPlacementMode("select");
+          setIsDrawing(false);
+          setCurrentRect(null);
+          cancelPolygon();
+          return;
+        }
+
+        // B: Build/Room mode
+        if (key === 'b') {
+          e.preventDefault();
+          setPlacementMode("room");
+          return;
+        }
+
+        // D: Door mode
+        if (key === 'd') {
+          e.preventDefault();
+          setPlacementMode("door");
+          return;
+        }
+
+        // W: Window mode
+        if (key === 'w') {
+          e.preventDefault();
+          setPlacementMode("window");
+          return;
+        }
+
+        // F: Furniture mode
+        if (key === 'f') {
+          e.preventDefault();
+          setPlacementMode("furniture");
+          return;
+        }
+
+        // +/= : Zoom in
+        if (key === '+' || key === '=') {
+          e.preventDefault();
+          setZoom(Math.min(2, zoom + 0.1));
+          return;
+        }
+
+        // -: Zoom out
+        if (key === '-') {
+          e.preventDefault();
+          setZoom(Math.max(0.5, zoom - 0.1));
+          return;
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo]);
+  }, [
+    undo, redo, isSaving, saveToCloud, rooms, doors, windows, furniture, aduBoundary,
+    pixelsPerFoot, displaySize, selectedRoomId, selectedDoorId, selectedWindowId,
+    selectedFurnitureId, isDrawing, cancelPolygon, rotateSelectedDoor, rotateSelectedWindow,
+    rotateSelectedFurniture, handleRemoveBoundaryPoint, FURNITURE_CONFIG,
+    showGrid, gridSize, zoom, editBoundaryMode, selectedBoundaryPointIndex
+  ]);
 
   // Validation helpers
   const hasBathroom = rooms.some((room) => room.type === "bathroom");
@@ -1098,88 +1750,93 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           {/* Left Column - Controls */}
           <div className="space-y-4 h-fit">
             {/* Placement Mode Selector */}
-            <Card className="p-4 space-y-4 border-accent-top shadow-md transition-shadow hover:shadow-lg">
-              <Label className="text-base font-semibold text-foreground">What do you want to do?</Label>
-          <div className="flex flex-col gap-3">
-            <Button
-              variant={placementMode === "select" ? "default" : "outline"}
-              onClick={() => {
-                setPlacementMode("select");
-                setIsDrawing(false);
-                setCurrentRect(null);
-                cancelPolygon();
-              }}
-              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
-            >
-              <MousePointer2 className="h-5 w-5 mr-2" />
-              Select / Move
-            </Button>
-            <Button
-              variant={placementMode === "room" ? "default" : "outline"}
-              onClick={() => {
-                setPlacementMode("room");
-                setSelectedDoorId(null);
-                setSelectedWindowId(null);
-              }}
-              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
-            >
-              <Square className="h-5 w-5 mr-2" />
-              Add Rooms
-            </Button>
-            <Button
-              variant={placementMode === "door" ? "default" : "outline"}
-              onClick={() => {
-                setPlacementMode("door");
-                setSelectedRoomId(null);
-                setIsDrawing(false);
-                setCurrentRect(null);
-                cancelPolygon();
-              }}
-              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
-            >
-              <DoorOpen className="h-5 w-5 mr-2" />
-              Add Doors
-            </Button>
-            <Button
-              variant={placementMode === "window" ? "default" : "outline"}
-              onClick={() => {
-                setPlacementMode("window");
-                setSelectedRoomId(null);
-                setIsDrawing(false);
-                setCurrentRect(null);
-                cancelPolygon();
-              }}
-              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
-            >
-              <RectangleHorizontal className="h-5 w-5 mr-2" />
-              Add Windows
-            </Button>
-            <Button
-              variant={placementMode === "furniture" ? "default" : "outline"}
-              onClick={() => {
-                setPlacementMode("furniture");
-                setSelectedRoomId(null);
-                setSelectedDoorId(null);
-                setSelectedWindowId(null);
-                setIsDrawing(false);
-                setCurrentRect(null);
-                cancelPolygon();
-              }}
-              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
-            >
-              <Armchair className="h-5 w-5 mr-2" />
-              Add Furniture
-            </Button>
-          </div>
-        </Card>
+            <Card className="p-3 space-y-3 border-accent-top shadow-md transition-shadow hover:shadow-lg">
+              <Label className="text-sm font-semibold text-foreground">What do you want to do?</Label>
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant={placementMode === "select" ? "default" : "outline"}
+                  onClick={() => {
+                    setPlacementMode("select");
+                    setIsDrawing(false);
+                    setCurrentRect(null);
+                    cancelPolygon();
+                  }}
+                  className="text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 [&:not([data-state='active'])]:hover:text-foreground"
+                >
+                  <MousePointer2 className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Select / Move</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">V</span>
+                </Button>
+                <Button
+                  variant={placementMode === "room" ? "default" : "outline"}
+                  onClick={() => {
+                    setPlacementMode("room");
+                    setSelectedDoorId(null);
+                    setSelectedWindowId(null);
+                  }}
+                  className="text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 [&:not([data-state='active'])]:hover:text-foreground"
+                >
+                  <Square className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Add Rooms</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">B</span>
+                </Button>
+                <Button
+                  variant={placementMode === "door" ? "default" : "outline"}
+                  onClick={() => {
+                    setPlacementMode("door");
+                    setSelectedRoomId(null);
+                    setIsDrawing(false);
+                    setCurrentRect(null);
+                    cancelPolygon();
+                  }}
+                  className="text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 [&:not([data-state='active'])]:hover:text-foreground"
+                >
+                  <DoorOpen className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Add Doors</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">D</span>
+                </Button>
+                <Button
+                  variant={placementMode === "window" ? "default" : "outline"}
+                  onClick={() => {
+                    setPlacementMode("window");
+                    setSelectedRoomId(null);
+                    setIsDrawing(false);
+                    setCurrentRect(null);
+                    cancelPolygon();
+                  }}
+                  className="text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 [&:not([data-state='active'])]:hover:text-foreground"
+                >
+                  <RectangleHorizontal className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Add Windows</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">W</span>
+                </Button>
+                <Button
+                  variant={placementMode === "furniture" ? "default" : "outline"}
+                  onClick={() => {
+                    setPlacementMode("furniture");
+                    setSelectedRoomId(null);
+                    setSelectedDoorId(null);
+                    setSelectedWindowId(null);
+                    setIsDrawing(false);
+                    setCurrentRect(null);
+                    cancelPolygon();
+                  }}
+                  className="text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 [&:not([data-state='active'])]:hover:text-foreground"
+                >
+                  <Armchair className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Add Furniture</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">F</span>
+                </Button>
+              </div>
+            </Card>
 
         {placementMode === "room" && (
           <>
-            <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
+            <Card className="p-3 space-y-3 shadow-md transition-shadow hover:shadow-lg">
               {/* Draw Mode Selector */}
-              <div className="space-y-4">
-                <Label className="text-base font-semibold text-foreground">Room Shape:</Label>
-                <div className="flex flex-col gap-3">
+              <div className="space-y-3">
+                <Label className="text-sm font-semibold text-foreground">Room Shape:</Label>
+                <div className="flex flex-col gap-2">
                   <Button
                     variant={drawMode === "rectangle" ? "default" : "outline"}
                     onClick={() => {
@@ -1187,13 +1844,13 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                       cancelPolygon();
                     }}
                     className={cn(
-                      "text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm",
+                      "text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2",
                       drawMode !== "rectangle" && "hover:text-foreground"
                     )}
                   >
-                    <Square className="h-5 w-5 mr-2" />
-                    Simple Rectangle
-                    <span className="ml-auto text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Easy</span>
+                    <Square className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                    <span className="truncate">Simple Rectangle</span>
+                    <span className="ml-auto text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded flex-shrink-0">Easy</span>
                   </Button>
                   <Button
                     variant={drawMode === "polygon" ? "default" : "outline"}
@@ -1203,73 +1860,73 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                       setCurrentRect(null);
                     }}
                     className={cn(
-                      "text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm",
+                      "text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2",
                       drawMode !== "polygon" && "hover:text-foreground"
                     )}
                   >
-                    <Pentagon className="h-5 w-5 mr-2" />
-                    Custom Shape
-                    <span className="ml-auto text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded">Advanced</span>
+                    <Pentagon className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                    <span className="truncate">Custom Shape</span>
+                    <span className="ml-auto text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded flex-shrink-0">Advanced</span>
                   </Button>
                 </div>
                 {drawMode === "polygon" && isDrawing && (
-                  <div className="flex flex-col gap-2 pt-3 border-t">
+                  <div className="flex flex-col gap-2 pt-2 border-t">
                     <Button
                       variant="default"
                       onClick={completePolygon}
                       disabled={polygonPoints.length < 3}
-                      className="text-sm w-full"
+                      className="text-xs w-full h-auto py-2"
                     >
-                      <Check className="h-5 w-5 mr-2" />
+                      <Check className="h-4 w-4 mr-1.5" />
                       Complete ({polygonPoints.length} points)
                     </Button>
                     <Button
                       variant="outline"
                       onClick={cancelPolygon}
-                      className="text-sm w-full hover:text-foreground"
+                      className="text-xs w-full h-auto py-2 hover:text-foreground"
                     >
-                      <X className="h-5 w-5 mr-2" />
+                      <X className="h-4 w-4 mr-1.5" />
                       Cancel
                     </Button>
                   </div>
                 )}
-                <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
-                  <p className="text-sm text-blue-800">
+                <div className="p-2.5 bg-blue-50 rounded-lg border border-blue-200">
+                  <p className="text-xs text-blue-800 leading-relaxed">
                     {drawMode === "rectangle"
-                      ? "📐 Click and drag on the canvas to draw a rectangular room."
-                      : "📐 Click on the canvas to add corner points. Click Complete when done (minimum 3 points)."}
+                      ? "📐 Click and drag to draw a room."
+                      : "📐 Click to add corners. Complete when done (min 3)."}
                   </p>
                 </div>
               </div>
             </Card>
 
             {/* Room Type Selector */}
-            <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
-              <Label className="text-base font-semibold text-foreground">Choose Room Type:</Label>
-              <div className="grid grid-cols-2 gap-3">
+            <Card className="p-3 space-y-3 shadow-md transition-shadow hover:shadow-lg">
+              <Label className="text-sm font-semibold text-foreground">Choose Room Type:</Label>
+              <div className="grid grid-cols-2 gap-2">
                 {(Object.keys(ROOM_CONFIGS) as RoomType[]).map((type) => (
                   <Button
                     key={type}
                     variant={selectedRoomType === type ? "default" : "outline"}
                     onClick={() => setSelectedRoomType(type)}
                     className={cn(
-                      "text-sm justify-start transition-all hover:scale-105 hover:shadow-sm h-auto py-2.5",
+                      "text-xs justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 min-w-0",
                       selectedRoomType !== type && "hover:text-foreground"
                     )}
                     title={`${ROOM_CONFIGS[type].label} - ${ROOM_SIZE_HINTS[type].description}`}
                   >
-                    <span className="mr-2 text-lg">{ROOM_CONFIGS[type].icon}</span>
-                    {ROOM_CONFIGS[type].label}
+                    <span className="mr-1.5 text-base flex-shrink-0">{ROOM_CONFIGS[type].icon}</span>
+                    <span className="truncate">{ROOM_CONFIGS[type].label}</span>
                   </Button>
                 ))}
               </div>
               {selectedRoomType && (
-                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
-                  <p className="text-sm text-amber-800">
+                <div className="p-2.5 bg-amber-50 rounded-lg border border-amber-200">
+                  <p className="text-xs text-amber-800 leading-relaxed">
                     <strong>{ROOM_CONFIGS[selectedRoomType].label}:</strong> {ROOM_SIZE_HINTS[selectedRoomType].description}
                   </p>
-                  <p className="text-sm text-amber-600 mt-1">
-                    Recommended size: {ROOM_SIZE_HINTS[selectedRoomType].recommended} sq ft
+                  <p className="text-xs text-amber-600 mt-1">
+                    Recommended: {ROOM_SIZE_HINTS[selectedRoomType].recommended} sq ft
                   </p>
                 </div>
               )}
@@ -1278,74 +1935,74 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         )}
 
         {placementMode === "door" && (
-          <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
-            <Label className="text-base font-semibold text-foreground">Choose Door Type:</Label>
-            <div className="grid grid-cols-2 gap-3">
+          <Card className="p-3 space-y-3 shadow-md transition-shadow hover:shadow-lg">
+            <Label className="text-sm font-semibold text-foreground">Choose Door Type:</Label>
+            <div className="grid grid-cols-2 gap-2">
               {(Object.keys(DOOR_CONFIGS) as DoorType[]).map((type) => (
                 <Button
                   key={type}
                   variant={selectedDoorType === type ? "default" : "outline"}
                   onClick={() => setSelectedDoorType(type)}
                   className={cn(
-                    "text-sm justify-start transition-all hover:scale-105 hover:shadow-sm h-auto py-2.5",
+                    "text-xs justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 min-w-0",
                     selectedDoorType !== type && "hover:text-foreground"
                   )}
                   title={DOOR_CONFIGS[type].description}
                 >
-                  <span className="mr-2 text-lg">{DOOR_CONFIGS[type].icon}</span>
-                  {DOOR_CONFIGS[type].label}
+                  <span className="mr-1.5 text-base flex-shrink-0">{DOOR_CONFIGS[type].icon}</span>
+                  <span className="truncate">{DOOR_CONFIGS[type].label}</span>
                 </Button>
               ))}
             </div>
             {selectedDoorType && (
-              <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
-                <p className="text-sm text-blue-800">
+              <div className="p-2.5 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs text-blue-800 leading-relaxed">
                   <strong>{DOOR_CONFIGS[selectedDoorType].label}:</strong> {DOOR_CONFIGS[selectedDoorType].description}
                 </p>
               </div>
             )}
-            <div className="p-3 bg-green-50 rounded-lg border border-green-200">
-              <p className="text-sm text-green-800">
-                🚪 Click on the canvas to place a door. Tip: Use <strong>Open Passage</strong> for kitchen to dining, living to hallway, etc.
+            <div className="p-2.5 bg-green-50 rounded-lg border border-green-200">
+              <p className="text-xs text-green-800 leading-relaxed">
+                🚪 Click on the canvas to place a door.
               </p>
             </div>
           </Card>
         )}
 
         {placementMode === "window" && (
-          <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
-            <Label className="text-base font-semibold text-foreground">Choose Window Type:</Label>
-            <div className="grid grid-cols-2 gap-3">
+          <Card className="p-3 space-y-3 shadow-md transition-shadow hover:shadow-lg">
+            <Label className="text-sm font-semibold text-foreground">Choose Window Type:</Label>
+            <div className="grid grid-cols-2 gap-2">
               {(Object.keys(WINDOW_CONFIGS) as WindowType[]).map((type) => (
                 <Button
                   key={type}
                   variant={selectedWindowType === type ? "default" : "outline"}
                   onClick={() => setSelectedWindowType(type)}
                   className={cn(
-                    "text-sm justify-start transition-all hover:scale-105 hover:shadow-sm h-auto py-2.5",
+                    "text-xs justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 min-w-0",
                     selectedWindowType !== type && "hover:text-foreground"
                   )}
                 >
-                  <span className="mr-2 text-lg">{WINDOW_CONFIGS[type].icon}</span>
-                  {WINDOW_CONFIGS[type].label}
+                  <span className="mr-1.5 text-base flex-shrink-0">{WINDOW_CONFIGS[type].icon}</span>
+                  <span className="truncate">{WINDOW_CONFIGS[type].label}</span>
                 </Button>
               ))}
             </div>
-            <div className="p-3 bg-green-50 rounded-lg border border-green-200">
-              <p className="text-sm text-green-800">
-                🪟 Click on the canvas to place a window. Windows will snap to the grid.
+            <div className="p-2.5 bg-green-50 rounded-lg border border-green-200">
+              <p className="text-xs text-green-800 leading-relaxed">
+                🪟 Click on the canvas to place a window.
               </p>
             </div>
           </Card>
         )}
 
         {placementMode === "furniture" && (
-          <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
-            <Label className="text-base font-semibold text-foreground">Choose Furniture:</Label>
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+          <Card className="p-3 space-y-3 shadow-md transition-shadow hover:shadow-lg">
+            <Label className="text-sm font-semibold text-foreground">Choose Furniture:</Label>
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
               {/* Bedroom */}
               <div>
-                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🛏️ Bedroom</Label>
+                <Label className="text-xs text-muted-foreground mb-1.5 block font-medium">🛏️ Bedroom</Label>
                 <div className="grid grid-cols-2 gap-2">
                   {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
                     .filter(([, config]) => config.category === "bedroom")
@@ -1354,10 +2011,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         key={type}
                         variant={selectedFurnitureType === type ? "default" : "outline"}
                         onClick={() => setSelectedFurnitureType(type)}
-                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                        className="flex flex-col items-center gap-1 h-auto py-2 px-2 min-w-0"
                       >
-                        <config.icon className="h-5 w-5" />
-                        <span className="text-sm">{config.name}</span>
+                        <config.icon className="h-4 w-4 flex-shrink-0" />
+                        <span className="text-xs truncate w-full text-center">{config.name}</span>
                       </Button>
                     ))}
                 </div>
@@ -1365,7 +2022,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
               {/* Bathroom */}
               <div>
-                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🚿 Bathroom</Label>
+                <Label className="text-xs text-muted-foreground mb-1.5 block font-medium">🚿 Bathroom</Label>
                 <div className="grid grid-cols-2 gap-2">
                   {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
                     .filter(([, config]) => config.category === "bathroom")
@@ -1374,10 +2031,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         key={type}
                         variant={selectedFurnitureType === type ? "default" : "outline"}
                         onClick={() => setSelectedFurnitureType(type)}
-                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                        className="flex flex-col items-center gap-1 h-auto py-2 px-2 min-w-0"
                       >
-                        <config.icon className="h-5 w-5" />
-                        <span className="text-sm">{config.name}</span>
+                        <config.icon className="h-4 w-4 flex-shrink-0" />
+                        <span className="text-xs truncate w-full text-center">{config.name}</span>
                       </Button>
                     ))}
                 </div>
@@ -1385,7 +2042,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
               {/* Kitchen */}
               <div>
-                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🍳 Kitchen</Label>
+                <Label className="text-xs text-muted-foreground mb-1.5 block font-medium">🍳 Kitchen</Label>
                 <div className="grid grid-cols-2 gap-2">
                   {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
                     .filter(([, config]) => config.category === "kitchen")
@@ -1394,10 +2051,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         key={type}
                         variant={selectedFurnitureType === type ? "default" : "outline"}
                         onClick={() => setSelectedFurnitureType(type)}
-                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                        className="flex flex-col items-center gap-1 h-auto py-2 px-2 min-w-0"
                       >
-                        <config.icon className="h-5 w-5" />
-                        <span className="text-sm">{config.name}</span>
+                        <config.icon className="h-4 w-4 flex-shrink-0" />
+                        <span className="text-xs truncate w-full text-center">{config.name}</span>
                       </Button>
                     ))}
                 </div>
@@ -1405,7 +2062,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
               {/* Living Room */}
               <div>
-                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🛋️ Living Room</Label>
+                <Label className="text-xs text-muted-foreground mb-1.5 block font-medium">🛋️ Living Room</Label>
                 <div className="grid grid-cols-2 gap-2">
                   {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
                     .filter(([, config]) => config.category === "living")
@@ -1414,10 +2071,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         key={type}
                         variant={selectedFurnitureType === type ? "default" : "outline"}
                         onClick={() => setSelectedFurnitureType(type)}
-                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                        className="flex flex-col items-center gap-1 h-auto py-2 px-2 min-w-0"
                       >
-                        <config.icon className="h-5 w-5" />
-                        <span className="text-sm">{config.name}</span>
+                        <config.icon className="h-4 w-4 flex-shrink-0" />
+                        <span className="text-xs truncate w-full text-center">{config.name}</span>
                       </Button>
                     ))}
                 </div>
@@ -1425,7 +2082,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
               {/* Office */}
               <div>
-                <Label className="text-sm text-muted-foreground mb-2 block font-medium">💼 Office</Label>
+                <Label className="text-xs text-muted-foreground mb-1.5 block font-medium">💼 Office</Label>
                 <div className="grid grid-cols-2 gap-2">
                   {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
                     .filter(([, config]) => config.category === "office")
@@ -1434,10 +2091,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         key={type}
                         variant={selectedFurnitureType === type ? "default" : "outline"}
                         onClick={() => setSelectedFurnitureType(type)}
-                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                        className="flex flex-col items-center gap-1 h-auto py-2 px-2 min-w-0"
                       >
-                        <config.icon className="h-5 w-5" />
-                        <span className="text-sm">{config.name}</span>
+                        <config.icon className="h-4 w-4 flex-shrink-0" />
+                        <span className="text-xs truncate w-full text-center">{config.name}</span>
                       </Button>
                     ))}
                 </div>
@@ -1445,12 +2102,43 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
             </div>
 
             {selectedFurnitureType && (
-              <div className="p-3 bg-green-50 rounded-lg border border-green-200">
-                <p className="text-sm text-green-800">
+              <div className="p-2.5 bg-green-50 rounded-lg border border-green-200">
+                <p className="text-xs text-green-800 leading-relaxed">
                   🪑 Click on the canvas to place <strong>{FURNITURE_CONFIG[selectedFurnitureType].name}</strong>
                 </p>
               </div>
             )}
+
+            {/* Furniture Snap Mode Toggle */}
+            <div className="space-y-2">
+              <Label className="text-xs font-medium text-muted-foreground">Snap Mode</Label>
+              <div className="flex gap-1">
+                <Button
+                  variant={furnitureSnapMode === "grid" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setFurnitureSnapMode("grid")}
+                  className="flex-1 text-xs h-7"
+                >
+                  Grid
+                </Button>
+                <Button
+                  variant={furnitureSnapMode === "half" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setFurnitureSnapMode("half")}
+                  className="flex-1 text-xs h-7"
+                >
+                  Half
+                </Button>
+                <Button
+                  variant={furnitureSnapMode === "free" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setFurnitureSnapMode("free")}
+                  className="flex-1 text-xs h-7"
+                >
+                  Free
+                </Button>
+              </div>
+            </div>
           </Card>
         )}
 
@@ -1642,6 +2330,45 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                   Last saved: {new Date(lastSavedAt).toLocaleTimeString()}
                 </p>
               )}
+              {/* Auto-save toggle */}
+              <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center gap-1.5">
+                  <CloudCog className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">Auto-save</span>
+                </div>
+                <Switch
+                  checked={autoSaveEnabled}
+                  onCheckedChange={setAutoSaveEnabled}
+                  className="scale-75"
+                />
+              </div>
+              {autoSaveEnabled && (
+                <p className="text-xs text-muted-foreground/70">
+                  Changes auto-save after 2s
+                </p>
+              )}
+              {/* Restore from Cloud */}
+              {blueprintId && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRestoreDialog(true)}
+                  disabled={isRestoring}
+                  className="w-full text-xs mt-2"
+                >
+                  {isRestoring ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                      Restoring...
+                    </>
+                  ) : (
+                    <>
+                      <History className="h-3.5 w-3.5 mr-1.5" />
+                      Restore from Cloud
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
             {/* Rotate Controls - shown when item is selected */}
             {(selectedRoomId || selectedDoorId || selectedWindowId || selectedFurnitureId) && (
@@ -1825,6 +2552,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
               handlePanEnd();
               if (!isPanning) handleMouseUp();
             }}
+            onContextMenu={(e) => {
+              // Prevent browser context menu on canvas - we use right-click for deleting points
+              e.evt.preventDefault();
+            }}
             className={editBoundaryMode ? "cursor-pointer" : isPanning ? "cursor-grabbing" : placementMode === "select" ? "cursor-default" : "cursor-crosshair"}
           >
             <Layer>
@@ -1919,8 +2650,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
               {rooms.map((room) => {
                 const isRectangle = room.vertices.length === 4;
                 const isSelected = selectedRoomId === room.id;
-                const effectiveArea = calculateEffectiveArea(room);
-                const isNested = effectiveArea !== room.area;
+                const openPassages = doors.filter(d => d.type === "opening");
+                const wallSegments = getWallSegmentsExcludingOpenings(room.vertices, openPassages);
 
                 if (isRectangle) {
                   // Render as Rect for rectangular rooms
@@ -1929,6 +2660,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
                   return (
                     <Group key={room.id}>
+                      {/* Room fill - no stroke */}
                       <Rect
                         id={room.id}
                         ref={(node) => {
@@ -1943,8 +2675,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         width={width}
                         height={height}
                         fill={room.color}
-                        stroke={isSelected ? "#961818" : "#444"}
-                        strokeWidth={isSelected ? 4 / zoom : 3 / zoom}
                         draggable={!editBoundaryMode}
                         dragBoundFunc={(pos) => {
                           const snapped = { x: snapToGrid(pos.x), y: snapToGrid(pos.y) };
@@ -1959,40 +2689,31 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         shadowOpacity={isSelected ? 0.3 : 0}
                         perfectDrawEnabled={false}
                       />
-                      <Text
-                        x={room.vertices[0].x + width / 2}
-                        y={room.vertices[0].y + height / 2}
-                        text={`${room.name}\n${Math.round(effectiveArea)} sq ft${isNested ? ` (${room.area} total)` : ''}`}
-                        fontSize={14 / zoom}
-                        fill="#0a0a0a"
-                        fontStyle="bold"
-                        align="center"
-                        verticalAlign="middle"
-                        offsetX={(12 / zoom) * room.name.length / 2.5}
-                        offsetY={10 / zoom}
-                        listening={false}
-                        shadowColor="white"
-                        shadowBlur={4 / zoom}
-                        shadowOpacity={0.8}
-                      />
+                      {/* Wall segments - excluding open passages */}
+                      {wallSegments.map((segment, segIndex) => (
+                        <Line
+                          key={`wall-${room.id}-${segIndex}`}
+                          points={[segment.start.x, segment.start.y, segment.end.x, segment.end.y]}
+                          stroke={isSelected ? "#961818" : "#444"}
+                          strokeWidth={isSelected ? 4 / zoom : 3 / zoom}
+                          lineCap="round"
+                          listening={false}
+                        />
+                      ))}
+                      {/* Room label rendered separately after furniture */}
                     </Group>
                   );
                 } else {
                   // Render as Line (polygon) for L-shapes and custom polygons
                   const points = room.vertices.flatMap(v => [v.x, v.y]);
-                  const centroid = {
-                    x: room.vertices.reduce((sum, v) => sum + v.x, 0) / room.vertices.length,
-                    y: room.vertices.reduce((sum, v) => sum + v.y, 0) / room.vertices.length,
-                  };
 
                   return (
                     <Group key={room.id}>
+                      {/* Room fill - no stroke */}
                       <Line
                         id={room.id}
                         points={points}
                         fill={room.color}
-                        stroke={isSelected ? "#961818" : "#444"}
-                        strokeWidth={isSelected ? 4 / zoom : 3 / zoom}
                         closed={true}
                         onClick={() => handleRoomClick(room.id)}
                         onTap={() => handleRoomClick(room.id)}
@@ -2001,55 +2722,81 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         shadowOpacity={isSelected ? 0.3 : 0}
                         perfectDrawEnabled={false}
                       />
-                      <Text
-                        x={centroid.x}
-                        y={centroid.y}
-                        text={`${room.name}\n${Math.round(effectiveArea)} sq ft${isNested ? ` (${room.area} total)` : ''}`}
-                        fontSize={14 / zoom}
-                        fill="#0a0a0a"
-                        fontStyle="bold"
-                        align="center"
-                        verticalAlign="middle"
-                        offsetX={(12 / zoom) * room.name.length / 2.5}
-                        offsetY={10 / zoom}
-                        listening={false}
-                        shadowColor="white"
-                        shadowBlur={4 / zoom}
-                        shadowOpacity={0.8}
-                      />
-
-                      {/* Vertex handles (only when selected) */}
-                      {isSelected && room.vertices.map((vertex, vIndex) => (
-                        <Circle
-                          key={`vertex-${room.id}-${vIndex}`}
-                          x={vertex.x}
-                          y={vertex.y}
-                          radius={6 / zoom}
-                          fill="#961818"
-                          stroke="#ffffff"
-                          strokeWidth={2 / zoom}
-                          draggable={true}
-                          dragBoundFunc={(pos) => {
-                            const snapped = { x: snapToGrid(pos.x), y: snapToGrid(pos.y) };
-                            return constrainToCanvas(snapped);
-                          }}
-                          onDragMove={(e) => {
-                            const newPos = { x: e.target.x(), y: e.target.y() };
-                            const newVertices = [...room.vertices];
-                            newVertices[vIndex] = newPos;
-
-                            // Update room with new vertices
-                            const newArea = calculatePolygonArea(newVertices);
-                            setRooms(rooms.map(r =>
-                              r.id === room.id
-                                ? { ...r, vertices: newVertices, area: Math.round(newArea) }
-                                : r
-                            ));
-                          }}
+                      {/* Wall segments - excluding open passages */}
+                      {wallSegments.map((segment, segIndex) => (
+                        <Line
+                          key={`wall-${room.id}-${segIndex}`}
+                          points={[segment.start.x, segment.start.y, segment.end.x, segment.end.y]}
+                          stroke={isSelected ? "#961818" : "#444"}
+                          strokeWidth={isSelected ? 4 / zoom : 3 / zoom}
+                          lineCap="round"
+                          listening={false}
                         />
                       ))}
+                      {/* Room label rendered separately after furniture */}
 
-                      {/* Midpoint handles (only when selected) */}
+                      {/* Vertex handles (only when selected) - drag to move, right-click to delete */}
+                      {isSelected && room.vertices.map((vertex, vIndex) => {
+                        const canDelete = room.vertices.length > 3;
+                        return (
+                          <Circle
+                            key={`vertex-${room.id}-${vIndex}`}
+                            x={vertex.x}
+                            y={vertex.y}
+                            radius={8 / zoom}
+                            fill="#961818"
+                            stroke="#ffffff"
+                            strokeWidth={2 / zoom}
+                            draggable={true}
+                            dragBoundFunc={(pos) => {
+                              const snapped = { x: snapToGrid(pos.x), y: snapToGrid(pos.y) };
+                              return constrainToCanvas(snapped);
+                            }}
+                            onDragStart={() => {
+                              // Buffer the starting position
+                              polygonDragBufferRef.current = { roomId: room.id, vertexIndex: vIndex, pos: vertex };
+                            }}
+                            onDragEnd={(e) => {
+                              // Only update state on drag end - prevents spazzing
+                              const newPos = { x: snapToGrid(e.target.x()), y: snapToGrid(e.target.y()) };
+                              const previousPos = polygonDragBufferRef.current?.pos || vertex;
+                              const newVertices = [...room.vertices];
+                              newVertices[vIndex] = newPos;
+
+                              const newArea = calculatePolygonArea(newVertices);
+                              setRooms(rooms.map(r =>
+                                r.id === room.id
+                                  ? { ...r, vertices: newVertices, area: Math.round(newArea) }
+                                  : r
+                              ));
+
+                              // Log the vertex move
+                              logVertexMove(room.id, vIndex, previousPos, newPos);
+                              polygonDragBufferRef.current = null;
+                            }}
+                            onContextMenu={(e) => {
+                              e.evt.preventDefault();
+                              if (canDelete) {
+                                handleRemoveRoomVertex(room.id, vIndex);
+                              }
+                            }}
+                            onMouseEnter={(e) => {
+                              const stage = e.target.getStage();
+                              if (stage) {
+                                stage.container().style.cursor = canDelete ? 'pointer' : 'move';
+                              }
+                            }}
+                            onMouseLeave={(e) => {
+                              const stage = e.target.getStage();
+                              if (stage) {
+                                stage.container().style.cursor = 'default';
+                              }
+                            }}
+                          />
+                        );
+                      })}
+
+                      {/* Midpoint handles (only when selected) - for adding new vertices */}
                       {isSelected && room.vertices.map((vertex, vIndex) => {
                         const nextVertex = room.vertices[(vIndex + 1) % room.vertices.length];
                         const midpoint = {
@@ -2062,7 +2809,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                             key={`midpoint-${room.id}-${vIndex}`}
                             x={midpoint.x}
                             y={midpoint.y}
-                            radius={5 / zoom}
+                            radius={6 / zoom}
                             fill="#ffffff"
                             stroke="#961818"
                             strokeWidth={2 / zoom}
@@ -2071,28 +2818,30 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                               const snapped = { x: snapToGrid(pos.x), y: snapToGrid(pos.y) };
                               return constrainToCanvas(snapped);
                             }}
-                            onDragStart={() => {
-                              // Insert a new vertex at this midpoint
-                              const newVertices = [...room.vertices];
-                              newVertices.splice(vIndex + 1, 0, midpoint);
-                              const newArea = calculatePolygonArea(newVertices);
-                              setRooms(rooms.map(r =>
-                                r.id === room.id
-                                  ? { ...r, vertices: newVertices, area: Math.round(newArea) }
-                                  : r
-                              ));
-                            }}
-                            onDragMove={(e) => {
-                              const newPos = { x: e.target.x(), y: e.target.y() };
-                              // Update the newly created vertex (which is now at vIndex + 1)
-                              const newVertices = [...room.vertices];
-                              newVertices[vIndex + 1] = newPos;
-                              const newArea = calculatePolygonArea(newVertices);
-                              setRooms(rooms.map(r =>
-                                r.id === room.id
-                                  ? { ...r, vertices: newVertices, area: Math.round(newArea) }
-                                  : r
-                              ));
+                            onDragEnd={(e) => {
+                              // Insert new vertex and update on drag end only
+                              const newPos = { x: snapToGrid(e.target.x()), y: snapToGrid(e.target.y()) };
+
+                              // Only insert if actually moved from midpoint
+                              const dist = Math.sqrt(
+                                Math.pow(newPos.x - midpoint.x, 2) +
+                                Math.pow(newPos.y - midpoint.y, 2)
+                              );
+
+                              if (dist > gridSize / 2) {
+                                const newVertices = [...room.vertices];
+                                newVertices.splice(vIndex + 1, 0, newPos);
+                                const newArea = calculatePolygonArea(newVertices);
+                                setRooms(rooms.map(r =>
+                                  r.id === room.id
+                                    ? { ...r, vertices: newVertices, area: Math.round(newArea) }
+                                    : r
+                                ));
+                              }
+
+                              // Reset the circle position (it will re-render at the new midpoint)
+                              e.target.x(midpoint.x);
+                              e.target.y(midpoint.y);
                             }}
                           />
                         );
@@ -2293,28 +3042,37 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                       perfectDrawEnabled={false}
                     />
                   )}
-                  {/* Vertex circles */}
+                  {/* Vertex circles - right-click to delete */}
                   {polygonPoints.map((point, i) => (
                     <Circle
                       key={i}
                       x={point.x}
                       y={point.y}
-                      radius={5 / zoom}
+                      radius={6 / zoom}
                       fill="#961818"
                       stroke="#ffffff"
-                      strokeWidth={1 / zoom}
-                      listening={false}
+                      strokeWidth={2 / zoom}
+                      onContextMenu={(e) => {
+                        e.evt.preventDefault();
+                        e.cancelBubble = true;
+                        // Remove this point from the polygon
+                        const newPoints = polygonPoints.filter((_, idx) => idx !== i);
+                        setPolygonPoints(newPoints);
+                        // If no points left, stop drawing
+                        if (newPoints.length === 0) {
+                          setIsDrawing(false);
+                        }
+                      }}
                     />
                   ))}
                 </>
               )}
 
-              {/* Doors */}
-              {doors.map((door) => {
+              {/* Regular Doors (not openings) */}
+              {doors.filter(d => d.type !== "opening").map((door) => {
                 const isSelected = selectedDoorId === door.id;
                 const doorWidthPx = door.width * pixelsPerFoot;
                 const doorThicknessPx = gridSize / 8;
-                const isOpening = door.type === "opening";
 
                 return (
                   <Group
@@ -2328,13 +3086,11 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                       const isVertical = door.rotation % 180 === 90;
 
                       if (isVertical) {
-                        // Vertical: snap top/bottom edges to grid, center X to grid line
                         const snappedTopEdge = snapToGrid(pos.y - doorWidth / 2);
                         const snappedCenterY = snappedTopEdge + doorWidth / 2;
                         const snappedCenterX = snapToGrid(pos.x);
                         return constrainToCanvas({ x: snappedCenterX, y: snappedCenterY });
                       } else {
-                        // Horizontal: snap left/right edges to grid, center Y to grid line
                         const snappedLeftEdge = snapToGrid(pos.x - doorWidth / 2);
                         const snappedCenterX = snappedLeftEdge + doorWidth / 2;
                         const snappedCenterY = snapToGrid(pos.y);
@@ -2364,129 +3120,316 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     {/* Hit area for interaction */}
                     <Rect
                       x={-doorWidthPx / 2}
-                      y={isOpening ? -gridSize / 4 : -doorWidthPx / 2}
+                      y={-doorWidthPx / 2}
                       width={doorWidthPx}
-                      height={isOpening ? gridSize / 2 : doorWidthPx}
+                      height={doorWidthPx}
                       fill="transparent"
                     />
 
-                    {isOpening ? (
-                      /* Open Passage - No door, just gap indicator */
-                      <>
-                        {/* Dashed lines to show opening */}
-                        <Line
-                          ref={(node) => {
-                            if (node && isSelected) {
-                              const parent = node.getParent();
-                              if (parent) doorRefs.current.set(door.id, parent as Konva.Group);
-                            }
-                          }}
-                          points={[-doorWidthPx / 2, 0, doorWidthPx / 2, 0]}
-                          stroke={isSelected ? "#961818" : "#999"}
-                          strokeWidth={2 / zoom}
-                          dash={[6 / zoom, 4 / zoom]}
-                          lineCap="round"
-                          listening={false}
-                        />
-                        {/* "OPEN" text label */}
-                        <Text
-                          x={0}
-                          y={-8 / zoom}
-                          text="OPEN"
-                          fontSize={10 / zoom}
-                          fill={isSelected ? "#961818" : "#666"}
-                          align="center"
-                          offsetX={15 / zoom}
-                          listening={false}
-                        />
-                      </>
-                    ) : (
-                      /* Regular Door */
-                      <>
-                        {/* Door frame/wall opening */}
-                        <Line
-                          points={[-doorWidthPx / 2, 0, doorWidthPx / 2, 0]}
-                          stroke={isSelected ? "#961818" : "#333"}
-                          strokeWidth={doorThicknessPx}
-                          lineCap="round"
-                          listening={false}
-                        />
+                    {/* Door frame/wall opening */}
+                    <Line
+                      points={[-doorWidthPx / 2, 0, doorWidthPx / 2, 0]}
+                      stroke={isSelected ? "#961818" : "#333"}
+                      strokeWidth={doorThicknessPx}
+                      lineCap="round"
+                      listening={false}
+                    />
 
-                        {/* Door panel */}
-                        <Line
-                          points={[-doorWidthPx / 2 + 2, 0, doorWidthPx / 2 - 2, 0]}
-                          stroke={isSelected ? "#961818" : "#8B4513"}
-                          strokeWidth={2 / zoom}
-                          lineCap="butt"
-                          listening={false}
-                        />
+                    {/* Door panel */}
+                    <Line
+                      points={[-doorWidthPx / 2 + 2, 0, doorWidthPx / 2 - 2, 0]}
+                      stroke={isSelected ? "#961818" : "#8B4513"}
+                      strokeWidth={2 / zoom}
+                      lineCap="butt"
+                      listening={false}
+                    />
 
-                        {/* Door swing arc */}
-                        <Arc
-                          x={-doorWidthPx / 2}
-                          y={0}
-                          innerRadius={0}
-                          outerRadius={doorWidthPx}
-                          angle={90}
-                          rotation={0}
-                          stroke={isSelected ? "#961818" : "#8B4513"}
-                          strokeWidth={1 / zoom}
-                          dash={[4 / zoom, 4 / zoom]}
-                          listening={false}
-                        />
-                      </>
-                    )}
+                    {/* Door swing arc */}
+                    <Arc
+                      x={-doorWidthPx / 2}
+                      y={0}
+                      innerRadius={0}
+                      outerRadius={doorWidthPx}
+                      angle={90}
+                      rotation={0}
+                      stroke={isSelected ? "#961818" : "#8B4513"}
+                      strokeWidth={1 / zoom}
+                      dash={[4 / zoom, 4 / zoom]}
+                      listening={false}
+                    />
                   </Group>
                 );
               })}
 
-              {/* Windows */}
+              {/* Open Passages - With rotation support and larger hit area */}
+              {doors.filter(d => d.type === "opening").map((opening) => {
+                const isSelected = selectedDoorId === opening.id;
+                const openingWidthPx = opening.width * pixelsPerFoot;
+                const openingThicknessPx = gridSize / 2; // Larger hit area for easier selection
+                const isVertical = opening.rotation % 180 === 90;
+
+                // For vertical openings, swap dimensions
+                const rectWidth = isVertical ? openingThicknessPx : openingWidthPx;
+                const rectHeight = isVertical ? openingWidthPx : openingThicknessPx;
+
+                // Position by leading edge (left edge for horizontal, top edge for vertical)
+                const leftEdgeX = opening.position.x - rectWidth / 2;
+                const topEdgeY = opening.position.y - rectHeight / 2;
+
+                return (
+                  <React.Fragment key={opening.id}>
+                    <Rect
+                      ref={(node) => {
+                        if (node) {
+                          openingRefs.current.set(opening.id, node);
+                        } else {
+                          openingRefs.current.delete(opening.id);
+                        }
+                      }}
+                      x={leftEdgeX}
+                      y={topEdgeY}
+                      width={rectWidth}
+                      height={rectHeight}
+                      fill="rgba(200, 200, 200, 0.3)"
+                      stroke={isSelected ? "#961818" : "#999"}
+                      strokeWidth={isSelected ? 2 / zoom : 1 / zoom}
+                      dash={[6 / zoom, 4 / zoom]}
+                      draggable={!editBoundaryMode}
+                      dragBoundFunc={(pos) => {
+                        if (isVertical) {
+                          // For vertical: snap top edge to grid (leading edge of width)
+                          const snappedY = snapToGrid(pos.y);
+                          // Snap center X to grid (for wall alignment)
+                          const centerX = pos.x + rectWidth / 2;
+                          const snappedCenterX = snapToGrid(centerX);
+                          return constrainToCanvas({ x: snappedCenterX - rectWidth / 2, y: snappedY });
+                        } else {
+                          // For horizontal: snap left edge to grid
+                          const snappedX = snapToGrid(pos.x);
+                          // Snap center Y to grid (for wall alignment)
+                          const centerY = pos.y + rectHeight / 2;
+                          const snappedCenterY = snapToGrid(centerY);
+                          return constrainToCanvas({ x: snappedX, y: snappedCenterY - rectHeight / 2 });
+                        }
+                      }}
+                      onDragEnd={(e) => {
+                        const node = e.target;
+                        let newCenterX: number, newCenterY: number;
+
+                        if (isVertical) {
+                          const newTopEdge = snapToGrid(node.y());
+                          newCenterX = snapToGrid(node.x() + rectWidth / 2);
+                          newCenterY = newTopEdge + rectHeight / 2;
+                          node.x(newCenterX - rectWidth / 2);
+                          node.y(newTopEdge);
+                        } else {
+                          const newLeftEdge = snapToGrid(node.x());
+                          newCenterY = snapToGrid(node.y() + rectHeight / 2);
+                          newCenterX = newLeftEdge + rectWidth / 2;
+                          node.x(newLeftEdge);
+                          node.y(newCenterY - rectHeight / 2);
+                        }
+
+                        const prevPos = { ...opening.position };
+                        setDoors(doors.map(d =>
+                          d.id === opening.id
+                            ? { ...d, position: { x: newCenterX, y: newCenterY } }
+                            : d
+                        ));
+                        logMove("door", opening.id, prevPos, { x: newCenterX, y: newCenterY });
+                      }}
+                      onTransformEnd={(e) => {
+                        const node = e.target;
+                        const scaleX = node.scaleX();
+                        const scaleY = node.scaleY();
+
+                        // Get scaled dimensions
+                        const scaledWidth = node.width() * scaleX;
+                        const scaledHeight = node.height() * scaleY;
+
+                        // Width is always the "opening size" (longer dimension)
+                        const newOpeningWidthPx = isVertical ? scaledHeight : scaledWidth;
+                        const newWidthFeet = Math.max(2, Math.round(newOpeningWidthPx / pixelsPerFoot));
+                        const actualWidthPx = newWidthFeet * pixelsPerFoot;
+
+                        // New rect dimensions
+                        const newRectWidth = isVertical ? openingThicknessPx : actualWidthPx;
+                        const newRectHeight = isVertical ? actualWidthPx : openingThicknessPx;
+
+                        let newCenterX: number, newCenterY: number;
+
+                        if (isVertical) {
+                          const newTopEdge = snapToGrid(node.y());
+                          newCenterX = snapToGrid(node.x() + scaledWidth / 2);
+                          newCenterY = newTopEdge + newRectHeight / 2;
+                        } else {
+                          const newLeftEdge = snapToGrid(node.x());
+                          newCenterY = snapToGrid(node.y() + scaledHeight / 2);
+                          newCenterX = newLeftEdge + newRectWidth / 2;
+                        }
+
+                        const prevWidth = opening.width;
+                        setDoors(doors.map(d =>
+                          d.id === opening.id
+                            ? { ...d, width: newWidthFeet, position: { x: newCenterX, y: newCenterY } }
+                            : d
+                        ));
+                        logResize("door", opening.id, { width: prevWidth }, { width: newWidthFeet }, { x: newCenterX, y: newCenterY });
+
+                        // Reset scale and set correct dimensions
+                        node.scaleX(1);
+                        node.scaleY(1);
+                        node.width(newRectWidth);
+                        node.height(newRectHeight);
+                        node.x(newCenterX - newRectWidth / 2);
+                        node.y(newCenterY - newRectHeight / 2);
+                      }}
+                      onClick={(e) => {
+                        e.cancelBubble = true;
+                        setSelectedDoorId(opening.id);
+                      }}
+                      onTap={(e) => {
+                        e.cancelBubble = true;
+                        setSelectedDoorId(opening.id);
+                      }}
+                    />
+                    {/* "OPEN" text label */}
+                    <Text
+                      x={opening.position.x}
+                      y={opening.position.y - (isVertical ? 0 : 14 / zoom)}
+                      text="OPEN"
+                      fontSize={10 / zoom}
+                      fill={isSelected ? "#961818" : "#666"}
+                      align="center"
+                      offsetX={isVertical ? 5 / zoom : 15 / zoom}
+                      rotation={isVertical ? 90 : 0}
+                      listening={false}
+                    />
+                  </React.Fragment>
+                );
+              })}
+
+              {/* Windows - With rotation support */}
               {windows.map((window) => {
                 const isSelected = selectedWindowId === window.id;
                 const windowWidthPx = window.width * pixelsPerFoot;
-                const windowThicknessPx = gridSize / 6; // Window thickness
+                const windowThicknessPx = gridSize / 6;
+                const isVertical = window.rotation % 180 === 90;
+
+                // For vertical windows, swap dimensions
+                const rectWidth = isVertical ? windowThicknessPx : windowWidthPx;
+                const rectHeight = isVertical ? windowWidthPx : windowThicknessPx;
+
+                // Position by top-left corner (convert from center)
+                const leftEdgeX = window.position.x - rectWidth / 2;
+                const topEdgeY = window.position.y - rectHeight / 2;
 
                 return (
-                  <Group
+                  <Rect
                     key={window.id}
-                    x={window.position.x}
-                    y={window.position.y}
-                    rotation={window.rotation}
+                    ref={(node) => {
+                      if (node) {
+                        windowRefs.current.set(window.id, node);
+                      } else {
+                        windowRefs.current.delete(window.id);
+                      }
+                    }}
+                    x={leftEdgeX}
+                    y={topEdgeY}
+                    width={rectWidth}
+                    height={rectHeight}
+                    fill={isSelected ? "#961818" : "#4682B4"}
+                    stroke={isSelected ? "#961818" : "#2C5282"}
+                    strokeWidth={isSelected ? 2 / zoom : 1 / zoom}
                     draggable={!editBoundaryMode}
                     dragBoundFunc={(pos) => {
-                      const windowWidth = window.width * pixelsPerFoot;
-                      const isVertical = window.rotation % 180 === 90;
-
                       if (isVertical) {
-                        // Vertical: snap top/bottom edges to grid, center X to grid line
-                        const snappedTopEdge = snapToGrid(pos.y - windowWidth / 2);
-                        const snappedCenterY = snappedTopEdge + windowWidth / 2;
-                        const snappedCenterX = snapToGrid(pos.x);
-                        return constrainToCanvas({ x: snappedCenterX, y: snappedCenterY });
+                        // For vertical: snap top edge to grid (leading edge of width)
+                        const snappedY = snapToGrid(pos.y);
+                        // Snap center X to grid (for wall alignment)
+                        const centerX = pos.x + rectWidth / 2;
+                        const snappedCenterX = snapToGrid(centerX);
+                        return constrainToCanvas({ x: snappedCenterX - rectWidth / 2, y: snappedY });
                       } else {
-                        // Horizontal: snap left/right edges to grid, center Y to grid line
-                        const snappedLeftEdge = snapToGrid(pos.x - windowWidth / 2);
-                        const snappedCenterX = snappedLeftEdge + windowWidth / 2;
-                        const snappedCenterY = snapToGrid(pos.y);
-                        return constrainToCanvas({ x: snappedCenterX, y: snappedCenterY });
+                        // For horizontal: snap left edge to grid
+                        const snappedX = snapToGrid(pos.x);
+                        // Snap center Y to grid (for wall alignment)
+                        const centerY = pos.y + rectHeight / 2;
+                        const snappedCenterY = snapToGrid(centerY);
+                        return constrainToCanvas({ x: snappedX, y: snappedCenterY - rectHeight / 2 });
                       }
                     }}
                     onDragEnd={(e) => {
-                      const group = e.target;
-                      const windowWidth = window.width * pixelsPerFoot;
-                      const isVertical = window.rotation % 180 === 90;
+                      const node = e.target;
+                      let newCenterX: number, newCenterY: number;
 
-                      let newX, newY;
                       if (isVertical) {
-                        const snappedTopEdge = snapToGrid(group.y() - windowWidth / 2);
-                        newY = snappedTopEdge + windowWidth / 2;
-                        newX = snapToGrid(group.x());
+                        const newTopEdge = snapToGrid(node.y());
+                        newCenterX = snapToGrid(node.x() + rectWidth / 2);
+                        newCenterY = newTopEdge + rectHeight / 2;
+                        node.x(newCenterX - rectWidth / 2);
+                        node.y(newTopEdge);
                       } else {
-                        const snappedLeftEdge = snapToGrid(group.x() - windowWidth / 2);
-                        newX = snappedLeftEdge + windowWidth / 2;
-                        newY = snapToGrid(group.y());
+                        const newLeftEdge = snapToGrid(node.x());
+                        newCenterY = snapToGrid(node.y() + rectHeight / 2);
+                        newCenterX = newLeftEdge + rectWidth / 2;
+                        node.x(newLeftEdge);
+                        node.y(newCenterY - rectHeight / 2);
                       }
-                      setWindows(windows.map(w => w.id === window.id ? { ...w, position: { x: newX, y: newY } } : w));
+
+                      const prevPos = { ...window.position };
+                      setWindows(windows.map(w =>
+                        w.id === window.id
+                          ? { ...w, position: { x: newCenterX, y: newCenterY } }
+                          : w
+                      ));
+                      logMove("window", window.id, prevPos, { x: newCenterX, y: newCenterY });
+                    }}
+                    onTransformEnd={(e) => {
+                      const node = e.target;
+                      const scaleX = node.scaleX();
+                      const scaleY = node.scaleY();
+
+                      // Get scaled dimensions
+                      const scaledWidth = node.width() * scaleX;
+                      const scaledHeight = node.height() * scaleY;
+
+                      // Width is always the "window size" (longer dimension)
+                      const newWindowWidthPx = isVertical ? scaledHeight : scaledWidth;
+                      const newWidthFeet = Math.max(1, Math.round(newWindowWidthPx / pixelsPerFoot));
+                      const actualWidthPx = newWidthFeet * pixelsPerFoot;
+
+                      // New rect dimensions
+                      const newRectWidth = isVertical ? windowThicknessPx : actualWidthPx;
+                      const newRectHeight = isVertical ? actualWidthPx : windowThicknessPx;
+
+                      let newCenterX: number, newCenterY: number;
+
+                      if (isVertical) {
+                        const newTopEdge = snapToGrid(node.y());
+                        newCenterX = snapToGrid(node.x() + scaledWidth / 2);
+                        newCenterY = newTopEdge + newRectHeight / 2;
+                      } else {
+                        const newLeftEdge = snapToGrid(node.x());
+                        newCenterY = snapToGrid(node.y() + scaledHeight / 2);
+                        newCenterX = newLeftEdge + newRectWidth / 2;
+                      }
+
+                      const prevWidth = window.width;
+                      setWindows(windows.map(w =>
+                        w.id === window.id
+                          ? { ...w, width: newWidthFeet, position: { x: newCenterX, y: newCenterY } }
+                          : w
+                      ));
+                      logResize("window", window.id, { width: prevWidth }, { width: newWidthFeet }, { x: newCenterX, y: newCenterY });
+
+                      // Reset scale and set correct dimensions
+                      node.scaleX(1);
+                      node.scaleY(1);
+                      node.width(newRectWidth);
+                      node.height(newRectHeight);
+                      node.x(newCenterX - newRectWidth / 2);
+                      node.y(newCenterY - newRectHeight / 2);
                     }}
                     onClick={(e) => {
                       e.cancelBubble = true;
@@ -2496,59 +3439,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                       e.cancelBubble = true;
                       setSelectedWindowId(window.id);
                     }}
-                  >
-                    {/* Hit area for interaction */}
-                    <Rect
-                      x={-windowWidthPx / 2 - 5}
-                      y={-windowThicknessPx / 2 - 5}
-                      width={windowWidthPx + 10}
-                      height={windowThicknessPx + 10}
-                      fill="transparent"
-                    />
-
-                    {/* Window frame */}
-                    <Rect
-                      x={-windowWidthPx / 2}
-                      y={-windowThicknessPx / 2}
-                      width={windowWidthPx}
-                      height={windowThicknessPx}
-                      fill={isSelected ? "#961818" : "#4682B4"}
-                      stroke={isSelected ? "#961818" : "#2C5282"}
-                      strokeWidth={1 / zoom}
-                      listening={false}
-                    />
-
-                    {/* Window panes (parallel lines) */}
-                    <Line
-                      points={[-windowWidthPx / 2 + 4, -windowThicknessPx / 2, -windowWidthPx / 2 + 4, windowThicknessPx / 2]}
-                      stroke="#ffffff"
-                      strokeWidth={1 / zoom}
-                      listening={false}
-                    />
-                    <Line
-                      points={[windowWidthPx / 2 - 4, -windowThicknessPx / 2, windowWidthPx / 2 - 4, windowThicknessPx / 2]}
-                      stroke="#ffffff"
-                      strokeWidth={1 / zoom}
-                      listening={false}
-                    />
-
-                    {/* Glass indicator (lighter fill) */}
-                    <Rect
-                      ref={(node) => {
-                        if (node && isSelected) {
-                          const parent = node.getParent();
-                          if (parent) windowRefs.current.set(window.id, parent as Konva.Group);
-                        }
-                      }}
-                      x={-windowWidthPx / 2 + 2}
-                      y={-windowThicknessPx / 2 + 2}
-                      width={windowWidthPx - 4}
-                      height={windowThicknessPx - 4}
-                      fill="#B0E0E6"
-                      opacity={0.5}
-                      listening={false}
-                    />
-                  </Group>
+                  />
                 );
               })}
 
@@ -2558,6 +3449,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 const config = FURNITURE_CONFIG[item.type];
                 const furnitureWidthPx = item.width * pixelsPerFoot;
                 const furnitureHeightPx = item.height * pixelsPerFoot;
+                const furnitureImage = furnitureImages[item.type];
 
                 return (
                   <Group
@@ -2567,14 +3459,14 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     rotation={item.rotation}
                     draggable={!editBoundaryMode}
                     dragBoundFunc={(pos) => {
-                      const snappedX = snapToGrid(pos.x);
-                      const snappedY = snapToGrid(pos.y);
+                      const snappedX = snapFurniture(pos.x);
+                      const snappedY = snapFurniture(pos.y);
                       return constrainToCanvas({ x: snappedX, y: snappedY });
                     }}
                     onDragEnd={(e) => {
                       const group = e.target;
-                      const newX = snapToGrid(group.x());
-                      const newY = snapToGrid(group.y());
+                      const newX = snapFurniture(group.x());
+                      const newY = snapFurniture(group.y());
                       setFurniture(furniture.map(f =>
                         f.id === item.id ? { ...f, position: { x: newX, y: newY } } : f
                       ));
@@ -2588,372 +3480,113 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                       setSelectedFurnitureId(item.id);
                     }}
                   >
-                    {/* Base rectangle for all furniture */}
+                    {/* Background fill for selection */}
                     <Rect
                       x={-furnitureWidthPx / 2}
                       y={-furnitureHeightPx / 2}
                       width={furnitureWidthPx}
                       height={furnitureHeightPx}
-                      fill={isSelected ? "#961818" : "#e5e5e5"}
+                      fill={isSelected ? "rgba(150, 24, 24, 0.15)" : "rgba(255, 255, 255, 0.9)"}
                       stroke={isSelected ? "#961818" : "#737373"}
-                      strokeWidth={2 / zoom}
+                      strokeWidth={isSelected ? 3 / zoom : 2 / zoom}
                       cornerRadius={2 / zoom}
                     />
 
-                    {/* Type-specific details */}
-                    {/* Beds - with pillow indicator */}
-                    {(item.type === "bed-double" || item.type === "bed-single") && (
-                      <>
-                        <Rect
-                          x={-furnitureWidthPx / 2 + 3}
-                          y={-furnitureHeightPx / 2 + 3}
-                          width={furnitureWidthPx - 6}
-                          height={furnitureHeightPx * 0.25}
-                          fill="#ffffff"
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                        />
-                      </>
-                    )}
-
-                    {/* Sofas - with cushion lines */}
-                    {(item.type === "sofa-3seat" || item.type === "sofa-2seat") && (
-                      <>
-                        <Line
-                          points={[
-                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.33, -furnitureHeightPx / 2 + 5,
-                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.33, furnitureHeightPx / 2 - 5,
-                          ]}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                        />
-                        <Line
-                          points={[
-                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.66, -furnitureHeightPx / 2 + 5,
-                            -furnitureWidthPx / 2 + furnitureWidthPx * 0.66, furnitureHeightPx / 2 - 5,
-                          ]}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                        />
-                      </>
-                    )}
-
-                    {/* Toilet - with bowl circle */}
-                    {item.type === "toilet" && (
-                      <>
-                        <Circle
-                          x={0}
-                          y={furnitureHeightPx * 0.15}
-                          radius={Math.min(furnitureWidthPx, furnitureHeightPx) * 0.3}
-                          fill="#ffffff"
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                        />
-                        <Rect
-                          x={-furnitureWidthPx * 0.3}
-                          y={-furnitureHeightPx / 2 + 5}
-                          width={furnitureWidthPx * 0.6}
-                          height={furnitureHeightPx * 0.25}
-                          fill="#ffffff"
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                        />
-                      </>
-                    )}
-
-                    {/* Sink - with basin circle */}
-                    {item.type === "sink" && (
-                      <Circle
-                        x={0}
-                        y={0}
-                        radius={Math.min(furnitureWidthPx, furnitureHeightPx) * 0.3}
-                        fill="#B0E0E6"
-                        stroke="#737373"
-                        strokeWidth={1 / zoom}
+                    {/* SVG Icon */}
+                    {furnitureImage && (
+                      <KonvaImage
+                        x={-furnitureWidthPx / 2 + 2}
+                        y={-furnitureHeightPx / 2 + 2}
+                        width={furnitureWidthPx - 4}
+                        height={furnitureHeightPx - 4}
+                        image={furnitureImage}
                         listening={false}
                       />
                     )}
 
-                    {/* Shower - with corner drain */}
-                    {item.type === "shower" && (
-                      <>
-                        <Rect
-                          x={-furnitureWidthPx / 2 + 3}
-                          y={-furnitureHeightPx / 2 + 3}
-                          width={furnitureWidthPx - 6}
-                          height={furnitureHeightPx - 6}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          fill="transparent"
-                        />
-                        <Circle
-                          x={furnitureWidthPx / 2 - 10}
-                          y={furnitureHeightPx / 2 - 10}
-                          radius={3 / zoom}
-                          fill="#737373"
-                          listening={false}
-                        />
-                      </>
-                    )}
-
-                    {/* Bathtub - with oval shape */}
-                    {item.type === "bathtub" && (
-                      <Rect
-                        x={-furnitureWidthPx / 2 + 5}
-                        y={-furnitureHeightPx / 2 + 5}
-                        width={furnitureWidthPx - 10}
-                        height={furnitureHeightPx - 10}
-                        fill="#B0E0E6"
-                        stroke="#737373"
-                        strokeWidth={1 / zoom}
-                        cornerRadius={furnitureHeightPx / 4}
+                    {/* Label - only show when selected */}
+                    {isSelected && (
+                      <Text
+                        x={-furnitureWidthPx / 2}
+                        y={furnitureHeightPx / 2 + 4 / zoom}
+                        width={furnitureWidthPx}
+                        text={config.name}
+                        fontSize={10 / zoom}
+                        fontFamily="Montserrat"
+                        fontStyle="bold"
+                        fill="#961818"
+                        align="center"
                         listening={false}
-                        opacity={0.5}
+                        shadowColor="white"
+                        shadowBlur={3 / zoom}
+                        shadowOpacity={1}
                       />
                     )}
-
-                    {/* Stove - with burners */}
-                    {item.type === "stove" && (
-                      <>
-                        <Circle
-                          x={-furnitureWidthPx * 0.25}
-                          y={-furnitureHeightPx * 0.25}
-                          radius={8 / zoom}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          fill="transparent"
-                        />
-                        <Circle
-                          x={furnitureWidthPx * 0.25}
-                          y={-furnitureHeightPx * 0.25}
-                          radius={8 / zoom}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          fill="transparent"
-                        />
-                        <Circle
-                          x={-furnitureWidthPx * 0.25}
-                          y={furnitureHeightPx * 0.25}
-                          radius={8 / zoom}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          fill="transparent"
-                        />
-                        <Circle
-                          x={furnitureWidthPx * 0.25}
-                          y={furnitureHeightPx * 0.25}
-                          radius={8 / zoom}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          fill="transparent"
-                        />
-                      </>
-                    )}
-
-                    {/* Refrigerator - with door line */}
-                    {item.type === "refrigerator" && (
-                      <Line
-                        points={[
-                          0, -furnitureHeightPx / 2 + 5,
-                          0, furnitureHeightPx / 2 - 5,
-                        ]}
-                        stroke="#737373"
-                        strokeWidth={1 / zoom}
-                        listening={false}
-                      />
-                    )}
-
-                    {/* Tables - with cross pattern */}
-                    {(item.type === "table-dining" || item.type === "table-coffee") && (
-                      <>
-                        <Line
-                          points={[
-                            -furnitureWidthPx / 2 + 10, -furnitureHeightPx / 2 + 10,
-                            furnitureWidthPx / 2 - 10, furnitureHeightPx / 2 - 10,
-                          ]}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          opacity={0.3}
-                        />
-                        <Line
-                          points={[
-                            furnitureWidthPx / 2 - 10, -furnitureHeightPx / 2 + 10,
-                            -furnitureWidthPx / 2 + 10, furnitureHeightPx / 2 - 10,
-                          ]}
-                          stroke="#737373"
-                          strokeWidth={1 / zoom}
-                          listening={false}
-                          opacity={0.3}
-                        />
-                      </>
-                    )}
-
-                    {/* Label */}
-                    <Text
-                      x={-furnitureWidthPx / 2}
-                      y={0}
-                      width={furnitureWidthPx}
-                      text={config.name}
-                      fontSize={10 / zoom}
-                      fontFamily="Montserrat"
-                      fill={isSelected ? "#ffffff" : "#404040"}
-                      align="center"
-                      verticalAlign="middle"
-                      listening={false}
-                    />
                   </Group>
                 );
               })}
+
+              {/* Room Labels - rendered on top of furniture */}
+              {rooms.map((room) => {
+                const effectiveArea = calculateEffectiveArea(room);
+                const isNested = effectiveArea !== room.area;
+                const isRectangle = room.vertices.length === 4 && (() => {
+                  const [v0, v1, v2, v3] = room.vertices;
+                  return (v0.x === v3.x && v1.x === v2.x && v0.y === v1.y && v2.y === v3.y) ||
+                         (v0.y === v3.y && v1.y === v2.y && v0.x === v1.x && v2.x === v3.x);
+                })();
+
+                if (isRectangle) {
+                  const width = Math.abs(room.vertices[2].x - room.vertices[0].x);
+                  const height = Math.abs(room.vertices[2].y - room.vertices[0].y);
+                  return (
+                    <Text
+                      key={`label-${room.id}`}
+                      x={room.vertices[0].x + width / 2}
+                      y={room.vertices[0].y + height / 2}
+                      text={`${room.name}\n${Math.round(effectiveArea)} sq ft${isNested ? ` (${room.area} total)` : ''}`}
+                      fontSize={14 / zoom}
+                      fill="#0a0a0a"
+                      fontStyle="bold"
+                      align="center"
+                      verticalAlign="middle"
+                      offsetX={(12 / zoom) * room.name.length / 2.5}
+                      offsetY={10 / zoom}
+                      listening={false}
+                      shadowColor="white"
+                      shadowBlur={4 / zoom}
+                      shadowOpacity={0.8}
+                    />
+                  );
+                } else {
+                  const centroid = {
+                    x: room.vertices.reduce((sum, v) => sum + v.x, 0) / room.vertices.length,
+                    y: room.vertices.reduce((sum, v) => sum + v.y, 0) / room.vertices.length,
+                  };
+                  return (
+                    <Text
+                      key={`label-${room.id}`}
+                      x={centroid.x}
+                      y={centroid.y}
+                      text={`${room.name}\n${Math.round(effectiveArea)} sq ft${isNested ? ` (${room.area} total)` : ''}`}
+                      fontSize={14 / zoom}
+                      fill="#0a0a0a"
+                      fontStyle="bold"
+                      align="center"
+                      verticalAlign="middle"
+                      offsetX={(12 / zoom) * room.name.length / 2.5}
+                      offsetY={10 / zoom}
+                      listening={false}
+                      shadowColor="white"
+                      shadowBlur={4 / zoom}
+                      shadowOpacity={0.8}
+                    />
+                  );
+                }
+              })}
             </Layer>
 
-            {/* Window Transformer Layer */}
-            <Layer>
-              {selectedWindowId && (
-                <Transformer
-                  ref={windowTransformerRef}
-                  enabledAnchors={['middle-left', 'middle-right']}
-                  rotateEnabled={false}
-                  ignoreStroke={true}
-                  keepRatio={false}
-                  centeredScaling={true}
-                  boundBoxFunc={(oldBox, newBox) => {
-                    // Snap width to grid (minimum 1 foot)
-                    const snappedWidth = Math.max(gridSize, snapToGrid(newBox.width));
-
-                    // Keep center position stable by adjusting x based on width change
-                    const oldCenterX = oldBox.x + oldBox.width / 2;
-                    const newX = oldCenterX - snappedWidth / 2;
-
-                    return {
-                      x: newX,
-                      y: oldBox.y,
-                      width: snappedWidth,
-                      height: oldBox.height,
-                      rotation: oldBox.rotation,
-                    };
-                  }}
-                  onTransformEnd={() => {
-                    const node = windowRefs.current.get(selectedWindowId!);
-                    if (node) {
-                      const currentWindow = windows.find(w => w.id === selectedWindowId);
-                      if (currentWindow) {
-                        // Get the actual width from the node's bounding box
-                        const nodeWidth = node.width() * node.scaleX();
-                        const newWidthFeet = Math.max(1, Math.round(nodeWidth / pixelsPerFoot));
-
-                        // Get center position from node
-                        const centerX = node.x();
-                        const centerY = node.y();
-
-                        // Snap position to grid
-                        const snappedX = snapToGrid(centerX);
-                        const snappedY = snapToGrid(centerY);
-
-                        setWindows(prev => prev.map(w =>
-                          w.id === selectedWindowId ? {
-                            ...w,
-                            width: newWidthFeet,
-                            position: { x: snappedX, y: snappedY }
-                          } : w
-                        ));
-
-                        // Reset transform scale
-                        node.scaleX(1);
-                        node.scaleY(1);
-                        node.position({ x: snappedX, y: snappedY });
-
-                        // Force transformer to update
-                        if (windowTransformerRef.current) {
-                          windowTransformerRef.current.forceUpdate();
-                          windowTransformerRef.current.getLayer()?.batchDraw();
-                        }
-                      }
-                    }
-                  }}
-                />
-              )}
-            </Layer>
-
-            {/* Door/Opening Transformer Layer */}
-            <Layer>
-              {selectedDoorId && doors.find(d => d.id === selectedDoorId)?.type === 'opening' && (
-                <Transformer
-                  ref={doorTransformerRef}
-                  enabledAnchors={['middle-left', 'middle-right']}
-                  rotateEnabled={false}
-                  ignoreStroke={true}
-                  keepRatio={false}
-                  centeredScaling={true}
-                  boundBoxFunc={(oldBox, newBox) => {
-                    // Snap width to grid (minimum 2 feet for openings)
-                    const snappedWidth = Math.max(gridSize * 2, snapToGrid(newBox.width));
-
-                    // Keep center position stable by adjusting x based on width change
-                    const oldCenterX = oldBox.x + oldBox.width / 2;
-                    const newX = oldCenterX - snappedWidth / 2;
-
-                    return {
-                      x: newX,
-                      y: oldBox.y,
-                      width: snappedWidth,
-                      height: oldBox.height,
-                      rotation: oldBox.rotation,
-                    };
-                  }}
-                  onTransformEnd={() => {
-                    const node = doorRefs.current.get(selectedDoorId!);
-                    if (node) {
-                      const currentDoor = doors.find(d => d.id === selectedDoorId);
-                      if (currentDoor) {
-                        // Get the actual width from the node's bounding box
-                        const nodeWidth = node.width() * node.scaleX();
-                        const newWidthFeet = Math.max(2, Math.round(nodeWidth / pixelsPerFoot));
-
-                        // Get center position from node
-                        const centerX = node.x();
-                        const centerY = node.y();
-
-                        // Snap position to grid
-                        const snappedX = snapToGrid(centerX);
-                        const snappedY = snapToGrid(centerY);
-
-                        setDoors(prev => prev.map(d =>
-                          d.id === selectedDoorId ? {
-                            ...d,
-                            width: newWidthFeet,
-                            position: { x: snappedX, y: snappedY }
-                          } : d
-                        ));
-
-                        // Reset transform scale
-                        node.scaleX(1);
-                        node.scaleY(1);
-                        node.position({ x: snappedX, y: snappedY });
-
-                        // Force transformer to update
-                        if (doorTransformerRef.current) {
-                          doorTransformerRef.current.forceUpdate();
-                          doorTransformerRef.current.getLayer()?.batchDraw();
-                        }
-                      }
-                    }
-                  }}
-                />
-              )}
-            </Layer>
-
-            {/* Transformer Layer for resizing */}
+            {/* Transformer Layer for resizing rooms */}
             {selectedRoomId && !editBoundaryMode && (
               <Layer>
                 <Transformer
@@ -2979,15 +3612,113 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     };
                   }}
                   enabledAnchors={[
-                    'top-left', 'top-right',
-                    'bottom-left', 'bottom-right'
+                    'top-left', 'top-center', 'top-right',
+                    'middle-left', 'middle-right',
+                    'bottom-left', 'bottom-center', 'bottom-right'
                   ]}
                   rotateEnabled={false}
+                  keepRatio={false}
                   ignoreStroke={true}
                   padding={2}
                 />
               </Layer>
             )}
+
+            {/* Transformer Layer for resizing windows - direction based on rotation */}
+            {selectedWindowId && !editBoundaryMode && (() => {
+              const selectedWindow = windows.find(w => w.id === selectedWindowId);
+              const isWindowVertical = selectedWindow ? selectedWindow.rotation % 180 === 90 : false;
+
+              return (
+              <Layer>
+                <Transformer
+                  ref={windowTransformerRef}
+                  boundBoxFunc={(oldBox, newBox) => {
+                    // Snap the resizable dimension to grid (minimum 1 foot)
+                    const minSize = gridSize;
+
+                    if (isWindowVertical) {
+                      // Vertical window - resize height (which is the window width)
+                      const snappedHeight = Math.max(minSize, snapToGrid(newBox.height));
+                      const snappedY = snapToGrid(newBox.y);
+                      return {
+                        ...newBox,
+                        x: oldBox.x,
+                        y: snappedY,
+                        width: oldBox.width,
+                        height: snappedHeight,
+                      };
+                    } else {
+                      // Horizontal window - resize width
+                      const snappedWidth = Math.max(minSize, snapToGrid(newBox.width));
+                      const snappedX = snapToGrid(newBox.x);
+                      return {
+                        ...newBox,
+                        x: snappedX,
+                        y: oldBox.y,
+                        width: snappedWidth,
+                        height: oldBox.height,
+                      };
+                    }
+                  }}
+                  enabledAnchors={isWindowVertical ? ['top-center', 'bottom-center'] : ['middle-left', 'middle-right']}
+                  rotateEnabled={false}
+                  ignoreStroke={true}
+                  keepRatio={false}
+                  centeredScaling={false}
+                  padding={4}
+                />
+              </Layer>
+              );
+            })()}
+
+            {/* Transformer Layer for resizing openings - direction based on rotation */}
+            {selectedDoorId && doors.find(d => d.id === selectedDoorId)?.type === 'opening' && !editBoundaryMode && (() => {
+              const selectedOpening = doors.find(d => d.id === selectedDoorId);
+              const isOpeningVertical = selectedOpening ? selectedOpening.rotation % 180 === 90 : false;
+
+              return (
+              <Layer>
+                <Transformer
+                  ref={openingTransformerRef}
+                  boundBoxFunc={(oldBox, newBox) => {
+                    // Snap the resizable dimension to grid (minimum 2 feet for openings)
+                    const minSize = 2 * gridSize; // 2 feet minimum
+
+                    if (isOpeningVertical) {
+                      // Vertical opening - resize height (which is the opening width)
+                      const snappedHeight = Math.max(minSize, snapToGrid(newBox.height));
+                      const snappedY = snapToGrid(newBox.y);
+                      return {
+                        ...newBox,
+                        x: oldBox.x,
+                        y: snappedY,
+                        width: oldBox.width,
+                        height: snappedHeight,
+                      };
+                    } else {
+                      // Horizontal opening - resize width
+                      const snappedWidth = Math.max(minSize, snapToGrid(newBox.width));
+                      const snappedX = snapToGrid(newBox.x);
+                      return {
+                        ...newBox,
+                        x: snappedX,
+                        y: oldBox.y,
+                        width: snappedWidth,
+                        height: oldBox.height,
+                      };
+                    }
+                  }}
+                  enabledAnchors={isOpeningVertical ? ['top-center', 'bottom-center'] : ['middle-left', 'middle-right']}
+                  rotateEnabled={false}
+                  ignoreStroke={true}
+                  keepRatio={false}
+                  centeredScaling={false}
+                  padding={4}
+                />
+              </Layer>
+              );
+            })()}
 
             {/* Scale Indicator and North Arrow - Architectural Standard */}
             <Layer>
@@ -3303,6 +4034,31 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
               className="bg-destructive text-white hover:bg-destructive/90 text-base"
             >
               Yes, Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Restore Confirmation Dialog */}
+      <AlertDialog open={restoreDialog} onOpenChange={setRestoreDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-lg">
+              <History className="h-5 w-5 text-primary" />
+              Restore from Cloud?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-base">
+              This will replace your current work with the last saved version from the cloud.
+              Any unsaved changes will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="text-base">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={restoreFromCloud}
+              className="text-base"
+            >
+              Yes, Restore
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

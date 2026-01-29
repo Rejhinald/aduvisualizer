@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 25" width="50" height="25" fill="none" preserveAspectRatio="none">
+  <!-- Bathtub - plan view (5ft x 2.5ft) -->
+  <!-- Outer tub -->
+  <rect x="1" y="1" width="48" height="23" rx="3" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <!-- Inner tub (where water goes) -->
+  <rect x="3" y="3" width="44" height="19" rx="2" stroke="currentColor" stroke-width="1" fill="none"/>
+  <!-- Drain -->
+  <circle cx="8" cy="18" r="1.5" stroke="currentColor" stroke-width="0.75" fill="none"/>
+  <!-- Faucet area -->
+  <rect x="40" y="5" width="6" height="4" rx="1" stroke="currentColor" stroke-width="0.75" fill="none"/>
+  <!-- Faucet handles -->
+  <circle cx="42" cy="7" r="1" stroke="currentColor" stroke-width="0.5" fill="none"/>
+  <circle cx="45" cy="7" r="1" stroke="currentColor" stroke-width="0.5" fill="none"/>
+</svg>

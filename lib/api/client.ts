@@ -116,6 +116,8 @@ export interface RoomData {
   description?: string
   color?: string
   vertices: Vertex[]
+  widthFeet?: number
+  heightFeet?: number
   areaSqFt: number
   rotation?: number
 }
@@ -311,4 +313,138 @@ export async function listVisualizationsForBlueprint(
   blueprintId: string
 ): Promise<ApiResponse<Visualization[]>> {
   return fetchApi<Visualization[]>(`/visualizations/blueprint/${blueprintId}`)
+}
+
+// ============ Actions/Session API ============
+
+export interface EditorSession {
+  sessionId: string
+  projectId: string
+  blueprintId?: string
+  startedAt: string
+}
+
+export interface ActionLogData {
+  sessionId: string
+  action: string // e.g., "room.move", "window.resize", "furniture.rotate"
+  entityType: "room" | "door" | "window" | "furniture" | "boundary"
+  entityId?: string
+  previousState?: Record<string, unknown>
+  newState?: Record<string, unknown>
+  positionX?: number
+  positionY?: number
+  width?: number
+  height?: number
+  rotation?: number
+}
+
+export interface BatchActionData {
+  sessionId: string
+  actions: Omit<ActionLogData, "sessionId">[]
+}
+
+export interface SessionDetails {
+  session: {
+    id: string
+    projectId: string
+    blueprintId?: string
+    status: string
+    actionCount: number
+    startedAt: string
+    lastActivityAt: string
+    closedAt?: string
+  }
+  actions: Array<{
+    id: string
+    action: string
+    entityType: string
+    entityId?: string
+    previousState?: Record<string, unknown>
+    newState?: Record<string, unknown>
+    positionX?: number
+    positionY?: number
+    width?: number
+    height?: number
+    rotation?: number
+    createdAt: string
+  }>
+}
+
+/**
+ * Start a new editor session
+ */
+export async function startEditorSession(data: {
+  projectId: string
+  blueprintId?: string
+}): Promise<ApiResponse<EditorSession>> {
+  return fetchApi<EditorSession>("/actions/sessions", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * End an editor session
+ */
+export async function endEditorSession(
+  sessionId: string
+): Promise<ApiResponse<{
+  sessionId: string
+  status: string
+  actionCount: number
+  duration?: number
+}>> {
+  return fetchApi(`/actions/sessions/${sessionId}/end`, {
+    method: "POST",
+  })
+}
+
+/**
+ * Log a single action
+ */
+export async function logAction(
+  data: ActionLogData
+): Promise<ApiResponse<{ id: string; action: string; createdAt: string }>> {
+  return fetchApi("/actions/log", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Log multiple actions in batch (more efficient)
+ */
+export async function logActionBatch(
+  data: BatchActionData
+): Promise<ApiResponse<{ logged: number; sessionId: string }>> {
+  return fetchApi("/actions/log-batch", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Get session details with all actions
+ */
+export async function getEditorSession(
+  sessionId: string
+): Promise<ApiResponse<SessionDetails>> {
+  return fetchApi<SessionDetails>(`/actions/sessions/${sessionId}`)
+}
+
+/**
+ * List sessions for a project
+ */
+export async function listProjectSessions(
+  projectId: string
+): Promise<ApiResponse<Array<{
+  id: string
+  blueprintId?: string
+  status: string
+  actionCount: number
+  startedAt: string
+  lastActivityAt: string
+  closedAt?: string
+}>>> {
+  return fetchApi(`/actions/sessions/project/${projectId}`)
 }

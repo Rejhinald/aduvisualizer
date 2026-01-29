@@ -161,6 +161,7 @@ export function WizardProvider({ children }: { children: React.ReactNode }) {
         vertices: room.vertices,
         area: room.area,
         rotation: 0,
+        description: room.description,  // Include description for "other" type rooms
       }));
 
       const convertedDoors = editorData.doors.map((door) => ({
