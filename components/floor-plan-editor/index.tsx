@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * Floor Plan Editor - Modular Version
- *
- * This component is composed of modular parts located in:
- * - components/floor-plan-editor/types.ts - Type definitions
- * - components/floor-plan-editor/constants.ts - Constants and configs
- * - components/floor-plan-editor/hooks/ - Custom hooks
- * - components/floor-plan-editor/canvas/ - Canvas components
- * - components/floor-plan-editor/sidebar/ - Sidebar components
- * - components/floor-plan-editor/overlay/ - Floating overlay components
- * - components/floor-plan-editor/lists/ - List components
- */
-
 import React, { useRef, useEffect, useCallback, useState } from "react";
 import { Stage, Layer } from "react-konva";
 import type Konva from "konva";
@@ -30,57 +17,23 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import { Undo2, Redo2, Cloud, CloudOff, Loader2 } from "lucide-react";
+import { Undo2, Redo2, Cloud, CloudOff, Loader2, RotateCcw, History } from "lucide-react";
 import type { FloorPlan, Point, RoomType, DoorType, WindowType } from "@/lib/types";
 import { DOOR_CONFIGS, WINDOW_CONFIGS } from "@/lib/constants";
 import { useWizard } from "@/lib/context/wizard-context";
 import { useActionLogger } from "@/lib/hooks/use-action-logger";
 
 // Import modular components
-import {
-  useCanvasConfig,
-  useFurnitureImages,
-  useZoomPan,
-  useDragDrop,
-  useDrawing,
-} from "./floor-plan-editor/hooks";
-import {
-  Grid,
-  ADUBoundary,
-  Rooms,
-  Doors,
-  Windows,
-  Furniture,
-  DrawingPreview,
-} from "./floor-plan-editor/canvas";
-import {
-  ModeSelector,
-  RoomSelector,
-  DoorSelector,
-  WindowSelector,
-  FurnitureSelector,
-} from "./floor-plan-editor/sidebar";
-import {
-  ADUAreaIndicator,
-  Compass,
-  CanvasControls,
-} from "./floor-plan-editor/overlay";
-import {
-  RoomList,
-  DoorList,
-  WindowList,
-  FurnitureList,
-} from "./floor-plan-editor/lists";
-import type {
-  Furniture as FurnitureItem,
-  FurnitureType,
-  PlacementMode,
-} from "./floor-plan-editor/types";
-import { FURNITURE_CONFIG, MAX_HISTORY } from "./floor-plan-editor/constants";
+import { useCanvasConfig, useFurnitureImages, useZoomPan, useDragDrop, useDrawing } from "./hooks";
+import { Grid, ADUBoundary, Rooms, Doors, Windows, Furniture, DrawingPreview } from "./canvas";
+import { ModeSelector, RoomSelector, DoorSelector, WindowSelector, FurnitureSelector } from "./sidebar";
+import { ADUAreaIndicator, Compass, CanvasControls } from "./overlay";
+import { RoomList, DoorList, WindowList, FurnitureList } from "./lists";
+import type { Furniture as FurnitureItem, FurnitureType, PlacementMode } from "./types";
+import { FURNITURE_CONFIG, MAX_HISTORY } from "./constants";
 
 // Re-export types for external use
-export type { FurnitureType };
-export type { FurnitureItem as Furniture };
+export type { FurnitureType, Furniture as FurnitureItem } from "./types";
 
 interface FloorPlanEditorProps {
   onPlanChange: (plan: FloorPlan) => void;
@@ -88,10 +41,10 @@ interface FloorPlanEditorProps {
 
 export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   // Wizard context for cloud save
-  const { isSaving, saveError, lastSavedAt, projectId, blueprintId } = useWizard();
+  const { saveToCloud, isSaving, saveError, lastSavedAt, projectId, blueprintId } = useWizard();
 
   // Action logger for tracking all editor changes
-  const { logMove, logResize, logCreate, logDelete, logVertexMove } = useActionLogger({
+  const { logMove, logResize, logRotate, logCreate, logDelete, logVertexMove } = useActionLogger({
     projectId,
     blueprintId,
     enabled: !!projectId,
@@ -99,7 +52,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
   // Canvas configuration
   const config = useCanvasConfig();
-  const { pixelsPerFoot, gridSize, displaySize, extendedCanvasSize } = config;
+  const { pixelsPerFoot, gridSize, displaySize, extendedCanvasSize, extendedGridFeet } = config;
 
   // Load furniture images
   const furnitureImages = useFurnitureImages();
@@ -134,7 +87,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
   // UI state
   const [showGrid, setShowGrid] = useState(true);
-  const [editBoundaryMode] = useState(false);
+  const [editBoundaryMode, setEditBoundaryMode] = useState(false);
   const [isCanvasLocked, setIsCanvasLocked] = useState(false);
   const [furnitureSnapMode, setFurnitureSnapMode] = useState<"grid" | "half" | "free">("half");
 
@@ -181,19 +134,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       y: Math.max(0, Math.min(point.y, extendedCanvasSize)),
     };
   }, [extendedCanvasSize]);
-
-  // Calculate polygon area
-  const calculatePolygonArea = useCallback((vertices: Point[]): number => {
-    if (vertices.length < 3) return 0;
-    let area = 0;
-    for (let i = 0; i < vertices.length; i++) {
-      const j = (i + 1) % vertices.length;
-      area += vertices[i].x * vertices[j].y;
-      area -= vertices[j].x * vertices[i].y;
-    }
-    area = Math.abs(area) / 2;
-    return area / (pixelsPerFoot * pixelsPerFoot);
-  }, [pixelsPerFoot]);
 
   // Add furniture handler
   const handleAddFurniture = useCallback((type: FurnitureType, position: Point) => {
@@ -268,6 +208,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     completePolygon,
     cancelPolygon,
     resetDrawing,
+    calculatePolygonArea,
   } = useDrawing({
     config,
     drawMode,
@@ -355,29 +296,21 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   }, [historyIndex, history]);
 
-  // Initialize history on mount
+  // Initialize history
   useEffect(() => {
-    if (!hasInitializedHistory.current) {
+    if (!hasInitializedHistory.current && history.length === 0) {
       hasInitializedHistory.current = true;
-      // Use setTimeout to avoid synchronous setState in effect
-      setTimeout(() => {
-        const initialState: HistoryState = {
-          rooms: [],
-          doors: [],
-          windows: [],
-          furniture: [],
-          aduBoundary: [
-            { x: defaultOffset, y: defaultOffset },
-            { x: defaultOffset + defaultBoundarySize, y: defaultOffset },
-            { x: defaultOffset + defaultBoundarySize, y: defaultOffset + defaultBoundarySize },
-            { x: defaultOffset, y: defaultOffset + defaultBoundarySize },
-          ],
-        };
-        setHistory([initialState]);
-        setHistoryIndex(0);
-      }, 0);
+      const initialState: HistoryState = {
+        rooms: JSON.parse(JSON.stringify(rooms)),
+        doors: JSON.parse(JSON.stringify(doors)),
+        windows: JSON.parse(JSON.stringify(windows)),
+        furniture: JSON.parse(JSON.stringify(furniture)),
+        aduBoundary: JSON.parse(JSON.stringify(aduBoundary)),
+      };
+      setHistory([initialState]);
+      setHistoryIndex(0);
     }
-  }, [defaultOffset, defaultBoundarySize]);
+  }, [rooms, doors, windows, furniture, aduBoundary, history.length]);
 
   // Save to history on changes
   useEffect(() => {
@@ -623,10 +556,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     const halfSide = sideLength / 2;
 
     const newBoundary = [
-      constrainToCanvas({ x: centerX - halfSide, y: centerY - halfSide }),
-      constrainToCanvas({ x: centerX + halfSide, y: centerY - halfSide }),
-      constrainToCanvas({ x: centerX + halfSide, y: centerY + halfSide }),
-      constrainToCanvas({ x: centerX - halfSide, y: centerY + halfSide }),
+      { x: constrainToCanvas({ x: centerX - halfSide, y: centerY - halfSide }).x, y: constrainToCanvas({ x: centerX - halfSide, y: centerY - halfSide }).y },
+      { x: constrainToCanvas({ x: centerX + halfSide, y: centerY - halfSide }).x, y: constrainToCanvas({ x: centerX + halfSide, y: centerY - halfSide }).y },
+      { x: constrainToCanvas({ x: centerX + halfSide, y: centerY + halfSide }).x, y: constrainToCanvas({ x: centerX + halfSide, y: centerY + halfSide }).y },
+      { x: constrainToCanvas({ x: centerX - halfSide, y: centerY + halfSide }).x, y: constrainToCanvas({ x: centerX - halfSide, y: centerY + halfSide }).y },
     ];
 
     setAduBoundary(newBoundary);
@@ -634,131 +567,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
   // Calculate ADU area
   const aduArea = calculatePolygonArea(aduBoundary);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-        return;
-      }
-
-      const key = e.key.toLowerCase();
-
-      // Undo: Ctrl+Z
-      if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-        return;
-      }
-
-      // Redo: Ctrl+Y or Ctrl+Shift+Z
-      if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
-        e.preventDefault();
-        redo();
-        return;
-      }
-
-      // Delete selected item
-      if (key === 'delete' || key === 'backspace') {
-        e.preventDefault();
-        if (selectedRoomId) {
-          const room = rooms.find(r => r.id === selectedRoomId);
-          if (room) setDeleteDialog({ open: true, type: "room", id: selectedRoomId, name: room.name });
-        } else if (selectedDoorId) {
-          const door = doors.find(d => d.id === selectedDoorId);
-          if (door) setDeleteDialog({ open: true, type: "door", id: selectedDoorId, name: DOOR_CONFIGS[door.type].label });
-        } else if (selectedWindowId) {
-          const win = windows.find(w => w.id === selectedWindowId);
-          if (win) setDeleteDialog({ open: true, type: "window", id: selectedWindowId, name: WINDOW_CONFIGS[win.type].label });
-        } else if (selectedFurnitureId) {
-          const furn = furniture.find(f => f.id === selectedFurnitureId);
-          if (furn) setDeleteDialog({ open: true, type: "furniture", id: selectedFurnitureId, name: FURNITURE_CONFIG[furn.type].name });
-        }
-        return;
-      }
-
-      // Escape: Deselect / Cancel
-      if (key === 'escape') {
-        e.preventDefault();
-        setSelectedRoomId(null);
-        setSelectedDoorId(null);
-        setSelectedWindowId(null);
-        setSelectedFurnitureId(null);
-        setSelectedBoundaryPointIndex(null);
-        if (isDrawing) cancelPolygon();
-        return;
-      }
-
-      // R: Rotate selected
-      if (key === 'r' && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        if (selectedDoorId) rotateSelectedDoor();
-        else if (selectedWindowId) rotateSelectedWindow();
-        else if (selectedFurnitureId) rotateSelectedFurniture();
-        return;
-      }
-
-      // G: Toggle grid
-      if (key === 'g' && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        setShowGrid(!showGrid);
-        return;
-      }
-
-      // Mode shortcuts
-      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (key === 'v') { e.preventDefault(); setPlacementMode("select"); cancelPolygon(); }
-        if (key === 'b') { e.preventDefault(); setPlacementMode("room"); }
-        if (key === 'd') { e.preventDefault(); setPlacementMode("door"); }
-        if (key === 'w') { e.preventDefault(); setPlacementMode("window"); }
-        if (key === 'f') { e.preventDefault(); setPlacementMode("furniture"); }
-      }
-
-      // Arrow keys: Nudge
-      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
-        e.preventDefault();
-        const nudgeAmount = e.shiftKey ? gridSize : gridSize / 2;
-        const delta = {
-          x: key === 'arrowleft' ? -nudgeAmount : key === 'arrowright' ? nudgeAmount : 0,
-          y: key === 'arrowup' ? -nudgeAmount : key === 'arrowdown' ? nudgeAmount : 0,
-        };
-
-        if (selectedRoomId) {
-          setRooms(rooms.map(r =>
-            r.id === selectedRoomId
-              ? { ...r, vertices: r.vertices.map(v => ({ x: v.x + delta.x, y: v.y + delta.y })) }
-              : r
-          ));
-        } else if (selectedDoorId) {
-          setDoors(doors.map(d =>
-            d.id === selectedDoorId
-              ? { ...d, position: { x: d.position.x + delta.x, y: d.position.y + delta.y } }
-              : d
-          ));
-        } else if (selectedWindowId) {
-          setWindows(windows.map(w =>
-            w.id === selectedWindowId
-              ? { ...w, position: { x: w.position.x + delta.x, y: w.position.y + delta.y } }
-              : w
-          ));
-        } else if (selectedFurnitureId) {
-          setFurniture(furniture.map(f =>
-            f.id === selectedFurnitureId
-              ? { ...f, position: { x: f.position.x + delta.x, y: f.position.y + delta.y } }
-              : f
-          ));
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [
-    undo, redo, rooms, doors, windows, furniture, selectedRoomId, selectedDoorId,
-    selectedWindowId, selectedFurnitureId, isDrawing, cancelPolygon, rotateSelectedDoor,
-    rotateSelectedWindow, rotateSelectedFurniture, showGrid, gridSize
-  ]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
@@ -877,7 +685,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 onClick={undo}
                 disabled={historyIndex <= 0}
                 className="h-8 w-8 p-0"
-                title="Undo (Ctrl+Z)"
               >
                 <Undo2 className="h-4 w-4" />
               </Button>
@@ -887,7 +694,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 onClick={redo}
                 disabled={historyIndex >= history.length - 1}
                 className="h-8 w-8 p-0"
-                title="Redo (Ctrl+Y)"
               >
                 <Redo2 className="h-4 w-4" />
               </Button>
@@ -948,7 +754,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
               handlePanMove(e);
               drawingMouseMove(e);
             }}
-            onMouseUp={() => {
+            onMouseUp={(e) => {
               handlePanEnd();
               drawingMouseUp();
             }}
@@ -1060,4 +866,5 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   );
 }
 
+// Default export for easier imports
 export default FloorPlanEditor;

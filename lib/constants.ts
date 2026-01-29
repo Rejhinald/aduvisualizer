@@ -22,7 +22,7 @@ export const CANVAS_CONFIG = {
   HEIGHT: 800,
   BACKGROUND_COLOR: "#ffffff",
   WALL_THICKNESS: 6, // inches (typical interior wall)
-  MIN_SCALE: 0.5,
+  MIN_SCALE: 0.25, // Allow zooming out more
   MAX_SCALE: 3,
 } as const;
 
