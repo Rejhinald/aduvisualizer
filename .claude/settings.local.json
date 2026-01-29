@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /B \"C:\\\\Users\\\\Admin\\\\Documents\\\\Work Repo\\\\aduvisualizer\\\\app\\\\create\"\")",
+      "Bash(createdb:*)",
+      "Bash(\"C:/Program Files/PostgreSQL/17/bin/createdb.exe\" -U postgres aduvisualizer)",
+      "Bash(npm run lint)",
+      "Bash(npm run build:*)"
+    ]
+  }
+}

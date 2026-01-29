@@ -1,17 +1,28 @@
 "use client";
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
-import { Stage, Layer, Rect, Line, Text, Group, Circle, Transformer, Arc, Path } from "react-konva";
-import Konva from "konva";
+import { Stage, Layer, Rect, Line, Text, Group, Circle, Transformer, Arc } from "react-konva";
+import type Konva from "konva";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import { Trash2, ZoomIn, ZoomOut, Grid3x3, Maximize2, RotateCw, Square, Pentagon, Check, X, DoorOpen, RectangleHorizontal, MousePointer2, Undo2, Redo2, Armchair, Bed, Bath, ChefHat, Sofa } from "lucide-react";
+import { Trash2, ZoomIn, ZoomOut, Grid3x3, Maximize2, RotateCw, Square, Pentagon, Check, X, DoorOpen, RectangleHorizontal, MousePointer2, Undo2, Redo2, Armchair, Bed, Bath, ChefHat, Sofa, AlertTriangle, Cloud, CloudOff, Loader2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { GRID_CONFIG, CANVAS_CONFIG, ROOM_CONFIGS, ADU_LIMITS, DOOR_CONFIGS, WINDOW_CONFIGS, ROOM_SIZE_HINTS, getSizeComparison } from "@/lib/constants";
 import type { FloorPlan, Room, RoomType, Point, Door, DoorType, Window, WindowType } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useWizard } from "@/lib/context/wizard-context";
 
 // Furniture types
 export type FurnitureType =
@@ -36,6 +47,9 @@ interface FloorPlanEditorProps {
 }
 
 export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
+  // Wizard context for cloud save
+  const { saveToCloud, isSaving, saveError, lastSavedAt } = useWizard();
+
   const [rooms, setRooms] = useState<Room[]>([]);
   const [doors, setDoors] = useState<Door[]>([]);
   const [windows, setWindows] = useState<Window[]>([]);
@@ -64,6 +78,14 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const [selectedBoundaryPointIndex, setSelectedBoundaryPointIndex] = useState<number | null>(null);
   const [roomDescriptions, setRoomDescriptions] = useState<Map<string, string>>(new Map());
 
+  // Delete confirmation dialog state
+  const [deleteDialog, setDeleteDialog] = useState<{
+    open: boolean;
+    type: "room" | "door" | "window" | "furniture" | null;
+    id: string | null;
+    name: string;
+  }>({ open: false, type: null, id: null, name: "" });
+
   // Undo/Redo history
   interface HistoryState {
     rooms: Room[];
@@ -77,13 +99,13 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const isUndoingOrRedoing = useRef(false);
   const MAX_HISTORY = 50; // Limit history to 50 states
 
-  const stageRef = useRef<any>(null);
-  const transformerRef = useRef<any>(null);
-  const windowTransformerRef = useRef<any>(null);
-  const doorTransformerRef = useRef<any>(null);
-  const roomRefs = useRef<Map<string, any>>(new Map());
-  const windowRefs = useRef<Map<string, any>>(new Map());
-  const doorRefs = useRef<Map<string, any>>(new Map());
+  const stageRef = useRef<Konva.Stage | null>(null);
+  const transformerRef = useRef<Konva.Transformer | null>(null);
+  const windowTransformerRef = useRef<Konva.Transformer | null>(null);
+  const doorTransformerRef = useRef<Konva.Transformer | null>(null);
+  const roomRefs = useRef<Map<string, Konva.Rect>>(new Map());
+  const windowRefs = useRef<Map<string, Konva.Group>>(new Map());
+  const doorRefs = useRef<Map<string, Konva.Group>>(new Map());
 
   // Update window transformer when selection changes or window dimensions change
   useEffect(() => {
@@ -245,7 +267,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     };
   };
 
-  const isPointInsideBoundary = (point: Point): boolean => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _isPointInsideBoundary = (point: Point): boolean => {
     return isPointInPolygon(point, aduBoundary);
   };
 
@@ -293,7 +316,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
 
     // Second check: all vertices must be inside or on the boundary (with small tolerance)
-    const epsilon = 2; // 2 pixels tolerance for boundary detection
     return innerRoom.vertices.every(vertex => {
       // Create a slightly inset point (move toward centroid)
       const insetVertex = {
@@ -312,7 +334,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     width: number;   // feet
     height: number;  // feet (depth)
     category: "bedroom" | "living" | "bathroom" | "kitchen" | "office";
-    icon: any;
+    icon: React.ElementType;
   }> = {
     // Bedroom
     "bed-double": { name: "Double Bed", width: 4.5, height: 6.5, category: "bedroom", icon: Bed },
@@ -405,11 +427,13 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setAduBoundary(newBoundary);
   };
 
-  const handleAddBoundaryPoint = (e: any) => {
+  const handleAddBoundaryPoint = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (!editBoundaryMode) return;
 
     const stage = e.target.getStage();
+    if (!stage) return;
     const pointerPosition = stage.getPointerPosition();
+    if (!pointerPosition) return;
     const world = stageToWorld(pointerPosition);
     const x = snapToGrid(world.x);
     const y = snapToGrid(world.y);
@@ -536,7 +560,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setSelectedFurnitureId(newFurniture.id);
   };
 
-  const handleMouseDown = (e: any) => {
+  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
     // Check if clicking on empty area
     const clickedOnEmpty = e.target === e.target.getStage();
 
@@ -549,35 +573,43 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
       if (editBoundaryMode) {
         handleAddBoundaryPoint(e);
-      } else if (selectedFurnitureType) {
+      } else if (placementMode === "furniture" && selectedFurnitureType) {
         // Furniture placement mode
         const stage = e.target.getStage();
+        if (!stage) return;
         const pointerPosition = stage.getPointerPosition();
+        if (!pointerPosition) return;
         const world = stageToWorld(pointerPosition);
         const x = snapToGrid(world.x);
         const y = snapToGrid(world.y);
         addFurniture(selectedFurnitureType, { x, y });
-        setSelectedFurnitureType(null); // Clear selection after placement
+        // Keep the furniture type selected for easy multiple placements
       } else if (placementMode === "select") {
         // In select mode, just deselect everything (no placement)
         return;
       } else if (placementMode === "door") {
         const stage = e.target.getStage();
+        if (!stage) return;
         const pointerPosition = stage.getPointerPosition();
+        if (!pointerPosition) return;
         const world = stageToWorld(pointerPosition);
         const x = snapToGrid(world.x);
         const y = snapToGrid(world.y);
         handlePlaceDoor({ x, y });
       } else if (placementMode === "window") {
         const stage = e.target.getStage();
+        if (!stage) return;
         const pointerPosition = stage.getPointerPosition();
+        if (!pointerPosition) return;
         const world = stageToWorld(pointerPosition);
         const x = snapToGrid(world.x);
         const y = snapToGrid(world.y);
         handlePlaceWindow({ x, y });
       } else if (placementMode === "room" && selectedRoomType) {
         const stage = e.target.getStage();
+        if (!stage) return;
         const pointerPosition = stage.getPointerPosition();
+        if (!pointerPosition) return;
         const world = stageToWorld(pointerPosition);
         const x = snapToGrid(world.x);
         const y = snapToGrid(world.y);
@@ -598,14 +630,16 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   };
 
-  const handleMouseMove = (e: any) => {
+  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (!isDrawing || !selectedRoomType) return;
     if (drawMode === "polygon") return; // Polygon mode doesn't use mouse move
 
     if (!startPoint) return;
 
     const stage = e.target.getStage();
+    if (!stage) return;
     const pointerPosition = stage.getPointerPosition();
+    if (!pointerPosition) return;
     const world = stageToWorld(pointerPosition);
     const rawX = world.x;
     const rawY = world.y;
@@ -706,13 +740,13 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setSelectedRoomId(roomId);
   };
 
-  const handleRoomDragEnd = (roomId: string, e: any) => {
+  const handleRoomDragEnd = (roomId: string, e: Konva.KonvaEventObject<DragEvent>) => {
     const node = e.target;
     const room = rooms.find(r => r.id === roomId);
     if (!room) return;
 
-    let x = snapToGrid(node.x());
-    let y = snapToGrid(node.y());
+    const x = snapToGrid(node.x());
+    const y = snapToGrid(node.y());
 
     if (room.vertices.length === 4) {
       // Rectangle room
@@ -738,16 +772,16 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   };
 
-  const handleRoomTransform = (roomId: string, e: any) => {
+  const handleRoomTransform = (roomId: string, e: Konva.KonvaEventObject<Event>) => {
     const node = e.target;
     const scaleX = node.scaleX();
     const scaleY = node.scaleY();
 
     // Snap dimensions to grid
-    let newWidth = snapToGrid(node.width() * scaleX);
-    let newHeight = snapToGrid(node.height() * scaleY);
-    let x = snapToGrid(node.x());
-    let y = snapToGrid(node.y());
+    const newWidth = snapToGrid(node.width() * scaleX);
+    const newHeight = snapToGrid(node.height() * scaleY);
+    const x = snapToGrid(node.x());
+    const y = snapToGrid(node.y());
 
     // Calculate area in square feet
     const widthFeet = newWidth / pixelsPerFoot;
@@ -812,6 +846,43 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     }
   };
 
+  // Confirmation dialog handlers
+  const confirmDeleteRoom = (roomId: string, roomName: string) => {
+    setDeleteDialog({ open: true, type: "room", id: roomId, name: roomName });
+  };
+
+  const confirmDeleteDoor = (doorId: string, doorName: string) => {
+    setDeleteDialog({ open: true, type: "door", id: doorId, name: doorName });
+  };
+
+  const confirmDeleteWindow = (windowId: string, windowName: string) => {
+    setDeleteDialog({ open: true, type: "window", id: windowId, name: windowName });
+  };
+
+  const confirmDeleteFurniture = (furnitureId: string, furnitureName: string) => {
+    setDeleteDialog({ open: true, type: "furniture", id: furnitureId, name: furnitureName });
+  };
+
+  const handleConfirmDelete = () => {
+    if (!deleteDialog.id || !deleteDialog.type) return;
+
+    switch (deleteDialog.type) {
+      case "room":
+        deleteRoom(deleteDialog.id);
+        break;
+      case "door":
+        deleteDoor(deleteDialog.id);
+        break;
+      case "window":
+        deleteWindow(deleteDialog.id);
+        break;
+      case "furniture":
+        deleteFurniture(deleteDialog.id);
+        break;
+    }
+    setDeleteDialog({ open: false, type: null, id: null, name: "" });
+  };
+
   const handleZoomIn = () => {
     setZoom(Math.min(zoom * 1.2, CANVAS_CONFIG.MAX_SCALE));
   };
@@ -820,14 +891,16 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setZoom(Math.max(zoom / 1.2, CANVAS_CONFIG.MIN_SCALE));
   };
 
-  const handleWheel = (e: any) => {
+  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     if (isCanvasLocked) return; // Don't zoom if canvas is locked
 
     e.evt.preventDefault();
 
     const stage = e.target.getStage();
+    if (!stage) return;
     const oldScale = zoom;
     const pointer = stage.getPointerPosition();
+    if (!pointer) return;
 
     const mousePointTo = {
       x: (pointer.x - panOffset.x) / oldScale,
@@ -848,7 +921,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setPanOffset(newPos);
   };
 
-  const handlePanStart = (e: any) => {
+  const handlePanStart = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (isCanvasLocked) return; // Don't pan if canvas is locked
 
     // Middle mouse button (button 1)
@@ -856,8 +929,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       e.evt.preventDefault();
       setIsPanning(true);
       const stage = e.target.getStage();
-      const pos = stage.getPointerPosition();
-      setPanStart(pos);
+      const pos = stage?.getPointerPosition();
+      if (pos) setPanStart(pos);
     }
   };
 
@@ -894,7 +967,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   }, [rooms, doors, windows, furniture, aduBoundary, history, historyIndex]);
 
   // Undo function
-  const undo = () => {
+  const undo = useCallback(() => {
     if (historyIndex > 0) {
       isUndoingOrRedoing.current = true;
       const previousState = history[historyIndex - 1];
@@ -913,10 +986,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         isUndoingOrRedoing.current = false;
       }, 100);
     }
-  };
+  }, [historyIndex, history]);
 
   // Redo function
-  const redo = () => {
+  const redo = useCallback(() => {
     if (historyIndex < history.length - 1) {
       isUndoingOrRedoing.current = true;
       const nextState = history[historyIndex + 1];
@@ -934,6 +1007,24 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       setTimeout(() => {
         isUndoingOrRedoing.current = false;
       }, 100);
+    }
+  }, [historyIndex, history]);
+
+  // Save to cloud (backend)
+  const handleSaveToCloud = async () => {
+    const editorData = {
+      rooms,
+      doors,
+      windows,
+      furniture,
+      aduBoundary,
+      pixelsPerFoot,
+      canvasWidth: displaySize,
+      canvasHeight: displaySize,
+    };
+    const success = await saveToCloud(editorData);
+    if (success) {
+      console.log("Blueprint saved to cloud successfully!");
     }
   };
 
@@ -961,7 +1052,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [historyIndex, history]);
+  }, [undo, redo]);
 
   // Validation helpers
   const hasBathroom = rooms.some((room) => room.type === "bathroom");
@@ -979,11 +1070,12 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     return room.area < hint.min;
   });
 
-  const handlePanMove = (e: any) => {
+  const handlePanMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (!isPanning || !panStart) return;
 
     const stage = e.target.getStage();
-    const pos = stage.getPointerPosition();
+    const pos = stage?.getPointerPosition();
+    if (!pos) return;
 
     const dx = pos.x - panStart.x;
     const dy = pos.y - panStart.y;
@@ -1006,39 +1098,36 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           {/* Left Column - Controls */}
           <div className="space-y-4 h-fit">
             {/* Placement Mode Selector */}
-            <Card className="p-4 space-y-3 border-accent-top shadow-md transition-shadow hover:shadow-lg">
-              <Label className="text-sm font-semibold text-foreground">What do you want to do?</Label>
-          <div className="flex flex-col gap-2">
+            <Card className="p-4 space-y-4 border-accent-top shadow-md transition-shadow hover:shadow-lg">
+              <Label className="text-base font-semibold text-foreground">What do you want to do?</Label>
+          <div className="flex flex-col gap-3">
             <Button
               variant={placementMode === "select" ? "default" : "outline"}
-              size="sm"
               onClick={() => {
                 setPlacementMode("select");
                 setIsDrawing(false);
                 setCurrentRect(null);
                 cancelPolygon();
               }}
-              className="text-xs w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
+              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
             >
-              <MousePointer2 className="h-4 w-4 mr-2" />
+              <MousePointer2 className="h-5 w-5 mr-2" />
               Select / Move
             </Button>
             <Button
               variant={placementMode === "room" ? "default" : "outline"}
-              size="sm"
               onClick={() => {
                 setPlacementMode("room");
                 setSelectedDoorId(null);
                 setSelectedWindowId(null);
               }}
-              className="text-xs w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
+              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
             >
-              <Square className="h-4 w-4 mr-2" />
-              Rooms
+              <Square className="h-5 w-5 mr-2" />
+              Add Rooms
             </Button>
             <Button
               variant={placementMode === "door" ? "default" : "outline"}
-              size="sm"
               onClick={() => {
                 setPlacementMode("door");
                 setSelectedRoomId(null);
@@ -1046,14 +1135,13 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 setCurrentRect(null);
                 cancelPolygon();
               }}
-              className="text-xs w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
+              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
             >
-              <DoorOpen className="h-4 w-4 mr-2" />
-              Doors
+              <DoorOpen className="h-5 w-5 mr-2" />
+              Add Doors
             </Button>
             <Button
               variant={placementMode === "window" ? "default" : "outline"}
-              size="sm"
               onClick={() => {
                 setPlacementMode("window");
                 setSelectedRoomId(null);
@@ -1061,10 +1149,26 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 setCurrentRect(null);
                 cancelPolygon();
               }}
-              className="text-xs w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
+              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
             >
-              <RectangleHorizontal className="h-4 w-4 mr-2" />
-              Windows
+              <RectangleHorizontal className="h-5 w-5 mr-2" />
+              Add Windows
+            </Button>
+            <Button
+              variant={placementMode === "furniture" ? "default" : "outline"}
+              onClick={() => {
+                setPlacementMode("furniture");
+                setSelectedRoomId(null);
+                setSelectedDoorId(null);
+                setSelectedWindowId(null);
+                setIsDrawing(false);
+                setCurrentRect(null);
+                cancelPolygon();
+              }}
+              className="text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm [&:not([data-state='active'])]:hover:text-foreground"
+            >
+              <Armchair className="h-5 w-5 mr-2" />
+              Add Furniture
             </Button>
           </div>
         </Card>
@@ -1073,196 +1177,337 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           <>
             <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
               {/* Draw Mode Selector */}
-              <div className="space-y-3">
-                <Label className="text-sm font-semibold text-foreground">Room Shape:</Label>
-                <div className="flex flex-col gap-2">
+              <div className="space-y-4">
+                <Label className="text-base font-semibold text-foreground">Room Shape:</Label>
+                <div className="flex flex-col gap-3">
                   <Button
                     variant={drawMode === "rectangle" ? "default" : "outline"}
-                    size="sm"
                     onClick={() => {
                       setDrawMode("rectangle");
                       cancelPolygon();
                     }}
                     className={cn(
-                      "text-xs w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm",
+                      "text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm",
                       drawMode !== "rectangle" && "hover:text-foreground"
                     )}
                   >
-                    <Square className="h-4 w-4 mr-2" />
-                    Simple Rectangle <span className="ml-auto text-[10px] text-muted-foreground">(Easy)</span>
+                    <Square className="h-5 w-5 mr-2" />
+                    Simple Rectangle
+                    <span className="ml-auto text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Easy</span>
                   </Button>
                   <Button
                     variant={drawMode === "polygon" ? "default" : "outline"}
-                    size="sm"
                     onClick={() => {
                       setDrawMode("polygon");
                       setIsDrawing(false);
                       setCurrentRect(null);
                     }}
                     className={cn(
-                      "text-xs w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm",
+                      "text-sm w-full justify-start transition-all hover:translate-x-1 hover:shadow-sm",
                       drawMode !== "polygon" && "hover:text-foreground"
                     )}
                   >
-                    <Pentagon className="h-4 w-4 mr-2" />
-                    Custom Shape <span className="ml-auto text-[10px] text-muted-foreground">(Advanced)</span>
+                    <Pentagon className="h-5 w-5 mr-2" />
+                    Custom Shape
+                    <span className="ml-auto text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded">Advanced</span>
                   </Button>
                 </div>
                 {drawMode === "polygon" && isDrawing && (
-                  <div className="flex flex-col gap-2 pt-2 border-t">
+                  <div className="flex flex-col gap-2 pt-3 border-t">
                     <Button
                       variant="default"
-                      size="sm"
                       onClick={completePolygon}
                       disabled={polygonPoints.length < 3}
-                      className="text-xs w-full"
+                      className="text-sm w-full"
                     >
-                      <Check className="h-4 w-4 mr-2" />
+                      <Check className="h-5 w-5 mr-2" />
                       Complete ({polygonPoints.length} points)
                     </Button>
                     <Button
                       variant="outline"
-                      size="sm"
                       onClick={cancelPolygon}
-                      className="text-xs w-full hover:text-foreground"
+                      className="text-sm w-full hover:text-foreground"
                     >
-                      <X className="h-4 w-4 mr-2" />
+                      <X className="h-5 w-5 mr-2" />
                       Cancel
                     </Button>
                   </div>
                 )}
-                <p className="text-xs text-muted-foreground pt-2">
-                  {drawMode === "rectangle"
-                    ? "Click and drag on the canvas to draw a rectangular room."
-                    : "Click on the canvas to add points. Click Complete when done (minimum 3 points for L-shapes)."}
-                </p>
+                <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                  <p className="text-sm text-blue-800">
+                    {drawMode === "rectangle"
+                      ? "📐 Click and drag on the canvas to draw a rectangular room."
+                      : "📐 Click on the canvas to add corner points. Click Complete when done (minimum 3 points)."}
+                  </p>
+                </div>
               </div>
             </Card>
 
             {/* Room Type Selector */}
-            <Card className="p-4 space-y-3 shadow-md transition-shadow hover:shadow-lg">
-              <Label className="text-sm font-semibold text-foreground">Choose Room Type:</Label>
-              <div className="grid grid-cols-2 gap-2">
+            <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
+              <Label className="text-base font-semibold text-foreground">Choose Room Type:</Label>
+              <div className="grid grid-cols-2 gap-3">
                 {(Object.keys(ROOM_CONFIGS) as RoomType[]).map((type) => (
                   <Button
                     key={type}
                     variant={selectedRoomType === type ? "default" : "outline"}
-                    size="sm"
                     onClick={() => setSelectedRoomType(type)}
                     className={cn(
-                      "text-xs justify-start transition-all hover:scale-105 hover:shadow-sm",
+                      "text-sm justify-start transition-all hover:scale-105 hover:shadow-sm h-auto py-2.5",
                       selectedRoomType !== type && "hover:text-foreground"
                     )}
                     title={`${ROOM_CONFIGS[type].label} - ${ROOM_SIZE_HINTS[type].description}`}
                   >
-                    <span className="mr-2">{ROOM_CONFIGS[type].icon}</span>
+                    <span className="mr-2 text-lg">{ROOM_CONFIGS[type].icon}</span>
                     {ROOM_CONFIGS[type].label}
                   </Button>
                 ))}
               </div>
               {selectedRoomType && (
-                <p className="text-xs text-muted-foreground pt-2 border-t">
-                  💡 <strong>{ROOM_CONFIGS[selectedRoomType].label}:</strong> {ROOM_SIZE_HINTS[selectedRoomType].description}
-                  <br />
-                  <span className="text-[10px]">Recommended: {ROOM_SIZE_HINTS[selectedRoomType].recommended} sq ft</span>
-                </p>
+                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
+                  <p className="text-sm text-amber-800">
+                    <strong>{ROOM_CONFIGS[selectedRoomType].label}:</strong> {ROOM_SIZE_HINTS[selectedRoomType].description}
+                  </p>
+                  <p className="text-sm text-amber-600 mt-1">
+                    Recommended size: {ROOM_SIZE_HINTS[selectedRoomType].recommended} sq ft
+                  </p>
+                </div>
               )}
             </Card>
           </>
         )}
 
         {placementMode === "door" && (
-          <Card className="p-4 space-y-3 shadow-md transition-shadow hover:shadow-lg">
-            <Label className="text-sm font-semibold text-foreground">Choose Connection Type:</Label>
-            <div className="grid grid-cols-2 gap-2">
+          <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
+            <Label className="text-base font-semibold text-foreground">Choose Door Type:</Label>
+            <div className="grid grid-cols-2 gap-3">
               {(Object.keys(DOOR_CONFIGS) as DoorType[]).map((type) => (
                 <Button
                   key={type}
                   variant={selectedDoorType === type ? "default" : "outline"}
-                  size="sm"
                   onClick={() => setSelectedDoorType(type)}
                   className={cn(
-                    "text-xs justify-start transition-all hover:scale-105 hover:shadow-sm",
+                    "text-sm justify-start transition-all hover:scale-105 hover:shadow-sm h-auto py-2.5",
                     selectedDoorType !== type && "hover:text-foreground"
                   )}
                   title={DOOR_CONFIGS[type].description}
                 >
-                  <span className="mr-2">{DOOR_CONFIGS[type].icon}</span>
+                  <span className="mr-2 text-lg">{DOOR_CONFIGS[type].icon}</span>
                   {DOOR_CONFIGS[type].label}
                 </Button>
               ))}
             </div>
             {selectedDoorType && (
-              <p className="text-xs text-muted-foreground pt-2 border-t">
-                <strong>{DOOR_CONFIGS[selectedDoorType].label}:</strong> {DOOR_CONFIGS[selectedDoorType].description}
-              </p>
+              <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-sm text-blue-800">
+                  <strong>{DOOR_CONFIGS[selectedDoorType].label}:</strong> {DOOR_CONFIGS[selectedDoorType].description}
+                </p>
+              </div>
             )}
-            <p className="text-xs text-muted-foreground">
-              💡 Click on canvas to place. Use <strong>Open Passage</strong> for kitchen to dining, living to hallway, etc.
-            </p>
+            <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+              <p className="text-sm text-green-800">
+                🚪 Click on the canvas to place a door. Tip: Use <strong>Open Passage</strong> for kitchen to dining, living to hallway, etc.
+              </p>
+            </div>
           </Card>
         )}
 
         {placementMode === "window" && (
-          <Card className="p-4 space-y-3 shadow-md transition-shadow hover:shadow-lg">
-            <Label className="text-sm font-semibold text-foreground">Window Type:</Label>
-            <div className="grid grid-cols-2 gap-2">
+          <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
+            <Label className="text-base font-semibold text-foreground">Choose Window Type:</Label>
+            <div className="grid grid-cols-2 gap-3">
               {(Object.keys(WINDOW_CONFIGS) as WindowType[]).map((type) => (
                 <Button
                   key={type}
                   variant={selectedWindowType === type ? "default" : "outline"}
-                  size="sm"
                   onClick={() => setSelectedWindowType(type)}
                   className={cn(
-                    "text-xs justify-start transition-all hover:scale-105 hover:shadow-sm",
+                    "text-sm justify-start transition-all hover:scale-105 hover:shadow-sm h-auto py-2.5",
                     selectedWindowType !== type && "hover:text-foreground"
                   )}
                 >
-                  <span className="mr-2">{WINDOW_CONFIGS[type].icon}</span>
+                  <span className="mr-2 text-lg">{WINDOW_CONFIGS[type].icon}</span>
                   {WINDOW_CONFIGS[type].label}
                 </Button>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground pt-2">
-              Click on the canvas to place a window. Windows snap to grid.
-            </p>
+            <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+              <p className="text-sm text-green-800">
+                🪟 Click on the canvas to place a window. Windows will snap to the grid.
+              </p>
+            </div>
+          </Card>
+        )}
+
+        {placementMode === "furniture" && (
+          <Card className="p-4 space-y-4 shadow-md transition-shadow hover:shadow-lg">
+            <Label className="text-base font-semibold text-foreground">Choose Furniture:</Label>
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+              {/* Bedroom */}
+              <div>
+                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🛏️ Bedroom</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                    .filter(([, config]) => config.category === "bedroom")
+                    .map(([type, config]) => (
+                      <Button
+                        key={type}
+                        variant={selectedFurnitureType === type ? "default" : "outline"}
+                        onClick={() => setSelectedFurnitureType(type)}
+                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                      >
+                        <config.icon className="h-5 w-5" />
+                        <span className="text-sm">{config.name}</span>
+                      </Button>
+                    ))}
+                </div>
+              </div>
+
+              {/* Bathroom */}
+              <div>
+                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🚿 Bathroom</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                    .filter(([, config]) => config.category === "bathroom")
+                    .map(([type, config]) => (
+                      <Button
+                        key={type}
+                        variant={selectedFurnitureType === type ? "default" : "outline"}
+                        onClick={() => setSelectedFurnitureType(type)}
+                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                      >
+                        <config.icon className="h-5 w-5" />
+                        <span className="text-sm">{config.name}</span>
+                      </Button>
+                    ))}
+                </div>
+              </div>
+
+              {/* Kitchen */}
+              <div>
+                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🍳 Kitchen</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                    .filter(([, config]) => config.category === "kitchen")
+                    .map(([type, config]) => (
+                      <Button
+                        key={type}
+                        variant={selectedFurnitureType === type ? "default" : "outline"}
+                        onClick={() => setSelectedFurnitureType(type)}
+                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                      >
+                        <config.icon className="h-5 w-5" />
+                        <span className="text-sm">{config.name}</span>
+                      </Button>
+                    ))}
+                </div>
+              </div>
+
+              {/* Living Room */}
+              <div>
+                <Label className="text-sm text-muted-foreground mb-2 block font-medium">🛋️ Living Room</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                    .filter(([, config]) => config.category === "living")
+                    .map(([type, config]) => (
+                      <Button
+                        key={type}
+                        variant={selectedFurnitureType === type ? "default" : "outline"}
+                        onClick={() => setSelectedFurnitureType(type)}
+                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                      >
+                        <config.icon className="h-5 w-5" />
+                        <span className="text-sm">{config.name}</span>
+                      </Button>
+                    ))}
+                </div>
+              </div>
+
+              {/* Office */}
+              <div>
+                <Label className="text-sm text-muted-foreground mb-2 block font-medium">💼 Office</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
+                    .filter(([, config]) => config.category === "office")
+                    .map(([type, config]) => (
+                      <Button
+                        key={type}
+                        variant={selectedFurnitureType === type ? "default" : "outline"}
+                        onClick={() => setSelectedFurnitureType(type)}
+                        className="flex flex-col items-center gap-1.5 h-auto py-3"
+                      >
+                        <config.icon className="h-5 w-5" />
+                        <span className="text-sm">{config.name}</span>
+                      </Button>
+                    ))}
+                </div>
+              </div>
+            </div>
+
+            {selectedFurnitureType && (
+              <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+                <p className="text-sm text-green-800">
+                  🪑 Click on the canvas to place <strong>{FURNITURE_CONFIG[selectedFurnitureType].name}</strong>
+                </p>
+              </div>
+            )}
           </Card>
         )}
 
         {/* Your ADU at a Glance */}
-        <Card className="p-4 space-y-3 border-accent-top shadow-md bg-gradient-to-br from-surface to-surface-secondary">
-          <Label className="text-sm font-semibold text-foreground">Your ADU at a Glance</Label>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center p-2 bg-surface rounded-md border">
-              <span className="text-sm text-muted-foreground font-medium">Total Size:</span>
+        <Card className="p-4 space-y-4 border-accent-top shadow-md bg-gradient-to-br from-surface to-surface-secondary">
+          <Label className="text-base font-semibold text-foreground">Your ADU Summary</Label>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center p-3 bg-surface rounded-lg border">
+              <span className="text-sm text-muted-foreground font-medium">Total Room Area:</span>
               <span className={cn(
-                "text-sm font-bold px-2 py-1 rounded",
+                "text-base font-bold px-3 py-1.5 rounded-lg",
                 totalArea >= ADU_LIMITS.MIN_AREA && totalArea <= ADU_LIMITS.MAX_AREA
-                  ? "text-green-700 bg-green-50"
-                  : "text-destructive bg-red-50"
+                  ? "text-green-700 bg-green-50 border border-green-200"
+                  : "text-destructive bg-red-50 border border-red-200"
               )}>
+                {totalArea >= ADU_LIMITS.MIN_AREA && totalArea <= ADU_LIMITS.MAX_AREA ? "✓ " : "⚠ "}
                 {totalArea} sq ft
               </span>
             </div>
             {totalArea > 0 && (
-              <p className="text-xs text-muted-foreground italic px-2">
+              <p className="text-sm text-muted-foreground italic px-2">
                 📐 About the size of a {getSizeComparison(totalArea)}
               </p>
             )}
-            <div className="flex items-center gap-3 text-sm flex-wrap px-2">
-              <span className="font-medium">{rooms.filter(r => r.type === "bedroom").length} 🛏️</span>
-              <span className="font-medium">{rooms.filter(r => r.type === "bathroom").length} 🚿</span>
-              <span className="font-medium">{rooms.filter(r => r.type === "kitchen").length} 🍳</span>
-              <span className="text-muted-foreground text-xs">• {doors.length} doors • {windows.length} windows</span>
+            <div className="grid grid-cols-3 gap-2 p-3 bg-surface rounded-lg border">
+              <div className="text-center">
+                <div className="text-2xl">🛏️</div>
+                <div className="text-lg font-bold">{rooms.filter(r => r.type === "bedroom").length}</div>
+                <div className="text-xs text-muted-foreground">Bedrooms</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl">🚿</div>
+                <div className="text-lg font-bold">{rooms.filter(r => r.type === "bathroom").length}</div>
+                <div className="text-xs text-muted-foreground">Bathrooms</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl">🍳</div>
+                <div className="text-lg font-bold">{rooms.filter(r => r.type === "kitchen").length}</div>
+                <div className="text-xs text-muted-foreground">Kitchens</div>
+              </div>
+            </div>
+            <div className="flex items-center justify-center gap-4 text-sm text-muted-foreground">
+              <span>🚪 {doors.length} doors</span>
+              <span>•</span>
+              <span>🪟 {windows.length} windows</span>
             </div>
           </div>
 
           {/* Validation Warnings */}
           {validationIssues.length > 0 && (
-            <div className="pt-3 border-t space-y-2">
-              <Label className="text-xs font-medium text-destructive">⚠️ Important</Label>
+            <div className="p-3 bg-red-50 rounded-lg border border-red-200 space-y-2">
+              <Label className="text-sm font-semibold text-destructive flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                Please Fix These Issues
+              </Label>
               {validationIssues.map((issue, index) => (
-                <p key={index} className="text-xs text-destructive">
+                <p key={index} className="text-sm text-destructive">
                   • {issue}
                 </p>
               ))}
@@ -1271,12 +1516,12 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
           {/* Room Size Hints */}
           {undersizedRooms.length > 0 && (
-            <div className="pt-3 border-t space-y-2">
-              <Label className="text-xs font-medium text-amber-600">💡 Suggestions</Label>
+            <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 space-y-2">
+              <Label className="text-sm font-semibold text-amber-700">💡 Suggestions</Label>
               {undersizedRooms.map((room) => {
                 const hint = ROOM_SIZE_HINTS[room.type];
                 return (
-                  <p key={room.id} className="text-xs text-amber-600">
+                  <p key={room.id} className="text-sm text-amber-700">
                     • {room.name} is small ({room.area} sq ft). {hint.description}
                   </p>
                 );
@@ -1286,9 +1531,9 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
           {/* Success Message */}
           {validationIssues.length === 0 && undersizedRooms.length === 0 && rooms.length > 0 && (
-            <div className="pt-3 border-t">
-              <p className="text-xs text-green-600 flex items-center gap-2">
-                ✅ <span>Your design looks great!</span>
+            <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+              <p className="text-sm text-green-700 font-medium flex items-center gap-2">
+                ✅ Your design looks great! You can proceed to the next step.
               </p>
             </div>
           )}
@@ -1300,29 +1545,29 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         {/* Tools and Boundary Controls */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {/* Tools */}
-          <Card className="p-3 space-y-2 shadow-md bg-surface-secondary">
+          <Card className="p-4 space-y-3 shadow-md bg-surface-secondary">
             <div className="flex items-center justify-between">
-              <Label className="text-xs font-semibold text-foreground">Tools</Label>
+              <Label className="text-sm font-semibold text-foreground">Canvas Tools</Label>
               <Button
                 variant={isCanvasLocked ? "default" : "outline"}
                 size="sm"
                 onClick={() => setIsCanvasLocked(!isCanvasLocked)}
-                className="text-[10px] h-6 px-2 transition-all hover:scale-105"
+                className="text-sm transition-all hover:scale-105"
               >
                 {isCanvasLocked ? "🔒 Locked" : "🔓 Unlocked"}
               </Button>
             </div>
             {/* Undo/Redo Row */}
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-2 gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={undo}
                 disabled={historyIndex <= 0}
-                className="text-xs h-8 px-2 hover:text-foreground"
+                className="text-sm hover:text-foreground"
                 title="Undo (Ctrl+Z)"
               >
-                <Undo2 className="h-3.5 w-3.5 mr-1" />
+                <Undo2 className="h-4 w-4 mr-1.5" />
                 Undo
               </Button>
               <Button
@@ -1330,22 +1575,25 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 size="sm"
                 onClick={redo}
                 disabled={historyIndex >= history.length - 1}
-                className="text-xs h-8 px-2 hover:text-foreground"
+                className="text-sm hover:text-foreground"
                 title="Redo (Ctrl+Y)"
               >
-                <Redo2 className="h-3.5 w-3.5 mr-1" />
+                <Redo2 className="h-4 w-4 mr-1.5" />
                 Redo
               </Button>
             </div>
-            {/* View Controls Row */}
-            <div className="grid grid-cols-4 gap-1.5">
-              <Button variant="outline" size="sm" onClick={handleZoomIn} disabled={isCanvasLocked} className="text-xs h-8 px-2 hover:text-foreground" title="Zoom In">
-                <ZoomIn className="h-3.5 w-3.5" />
+            {/* View Controls Row - now with text labels */}
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" size="sm" onClick={handleZoomIn} disabled={isCanvasLocked} className="text-sm hover:text-foreground" title="Zoom In">
+                <ZoomIn className="h-4 w-4 mr-1.5" />
+                Zoom In
               </Button>
-              <Button variant="outline" size="sm" onClick={handleZoomOut} disabled={isCanvasLocked} className="text-xs h-8 px-2 hover:text-foreground" title="Zoom Out">
-                <ZoomOut className="h-3.5 w-3.5" />
+              <Button variant="outline" size="sm" onClick={handleZoomOut} disabled={isCanvasLocked} className="text-sm hover:text-foreground" title="Zoom Out">
+                <ZoomOut className="h-4 w-4 mr-1.5" />
+                Zoom Out
               </Button>
-              <Button variant="outline" size="sm" onClick={resetView} className="text-[10px] h-8 px-2 hover:text-foreground" title="Reset View">
+              <Button variant="outline" size="sm" onClick={resetView} className="text-sm hover:text-foreground" title="Reset View">
+                <Maximize2 className="h-4 w-4 mr-1.5" />
                 Reset
               </Button>
               <Button
@@ -1353,25 +1601,60 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                 size="sm"
                 onClick={() => setShowGrid(!showGrid)}
                 className={cn(
-                  "text-xs h-8 px-2",
+                  "text-sm",
                   !showGrid && "hover:text-foreground"
                 )}
                 title="Toggle Grid"
               >
-                <Grid3x3 className="h-3.5 w-3.5" />
+                <Grid3x3 className="h-4 w-4 mr-1.5" />
+                Grid
               </Button>
             </div>
+            {/* Save to Cloud */}
+            <div className="pt-3 border-t space-y-2">
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleSaveToCloud}
+                disabled={isSaving || rooms.length === 0}
+                className="w-full text-sm"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Cloud className="h-4 w-4 mr-1.5" />
+                    Save to Cloud
+                  </>
+                )}
+              </Button>
+              {saveError && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <CloudOff className="h-3 w-3" />
+                  {saveError}
+                </p>
+              )}
+              {lastSavedAt && !saveError && (
+                <p className="text-xs text-muted-foreground">
+                  Last saved: {new Date(lastSavedAt).toLocaleTimeString()}
+                </p>
+              )}
+            </div>
             {/* Rotate Controls - shown when item is selected */}
-            {(selectedRoomId || selectedDoorId || selectedWindowId) && (
-              <div className="pt-2 border-t">
+            {(selectedRoomId || selectedDoorId || selectedWindowId || selectedFurnitureId) && (
+              <div className="pt-3 border-t space-y-2">
+                <Label className="text-xs text-muted-foreground">Selected Item</Label>
                 {selectedRoomId && (
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={rotateSelectedRoom}
-                    className="w-full text-[10px] h-7 hover:text-foreground"
+                    className="w-full text-sm hover:text-foreground"
                   >
-                    <RotateCw className="h-3 w-3 mr-1" />
+                    <RotateCw className="h-4 w-4 mr-1.5" />
                     Rotate Room 90°
                   </Button>
                 )}
@@ -1380,9 +1663,9 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     variant="outline"
                     size="sm"
                     onClick={rotateSelectedDoor}
-                    className="w-full text-[10px] h-7 hover:text-foreground"
+                    className="w-full text-sm hover:text-foreground"
                   >
-                    <RotateCw className="h-3 w-3 mr-1" />
+                    <RotateCw className="h-4 w-4 mr-1.5" />
                     Rotate Door 90°
                   </Button>
                 )}
@@ -1391,9 +1674,9 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     variant="outline"
                     size="sm"
                     onClick={rotateSelectedWindow}
-                    className="w-full text-[10px] h-7 hover:text-foreground"
+                    className="w-full text-sm hover:text-foreground"
                   >
-                    <RotateCw className="h-3 w-3 mr-1" />
+                    <RotateCw className="h-4 w-4 mr-1.5" />
                     Rotate Window 90°
                   </Button>
                 )}
@@ -1402,9 +1685,9 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     variant="outline"
                     size="sm"
                     onClick={rotateSelectedFurniture}
-                    className="w-full text-[10px] h-7 hover:text-foreground"
+                    className="w-full text-sm hover:text-foreground"
                   >
-                    <RotateCw className="h-3 w-3 mr-1" />
+                    <RotateCw className="h-4 w-4 mr-1.5" />
                     Rotate Furniture 90°
                   </Button>
                 )}
@@ -1413,94 +1696,108 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           </Card>
 
           {/* ADU Lot Size Editor */}
-          <Card className="p-3 shadow-md bg-surface-secondary">
-            <div className="flex items-center justify-between mb-2">
-              <Label className="text-xs font-semibold flex items-center gap-1.5">
-                <Maximize2 className="h-3 w-3" />
-                Your Lot Size
+          <Card className="p-4 shadow-md bg-surface-secondary">
+            <div className="flex items-center justify-between mb-3">
+              <Label className="text-sm font-semibold flex items-center gap-2">
+                <Maximize2 className="h-4 w-4" />
+                Your ADU Size
               </Label>
               <span className={cn(
-                "text-[10px] font-bold px-2 py-0.5 rounded",
+                "text-sm font-bold px-3 py-1 rounded",
                 aduArea >= ADU_LIMITS.MIN_AREA && aduArea <= ADU_LIMITS.MAX_AREA
-                  ? "text-green-700 bg-green-50"
-                  : "text-destructive bg-red-50"
+                  ? "text-green-700 bg-green-50 border border-green-200"
+                  : "text-destructive bg-red-50 border border-red-200"
               )}>
+                {aduArea >= ADU_LIMITS.MIN_AREA && aduArea <= ADU_LIMITS.MAX_AREA ? "✓ " : "⚠ "}
                 {Math.round(aduArea)} sq ft
               </span>
             </div>
-            <p className="text-[9px] text-muted-foreground mb-2">
-              This is the total space your ADU can take up
+            <p className="text-sm text-muted-foreground mb-4">
+              This is the total space your ADU can occupy. Drag the slider to resize.
             </p>
 
-            {/* 2-Column Layout: Edit Button | Slider */}
-            <div className="grid grid-cols-[auto_1fr] gap-3 items-center">
-              {/* Left Column: Edit Shape Button */}
-              <div className="flex flex-col items-center gap-1">
-                <Button
-                  variant={editBoundaryMode ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => {
-                    setEditBoundaryMode(!editBoundaryMode);
-                    setSelectedRoomId(null);
-                    setSelectedBoundaryPointIndex(null);
-                  }}
-                  className={cn(
-                    "text-[10px] h-7 px-2 whitespace-nowrap",
-                    !editBoundaryMode && "hover:text-foreground"
-                  )}
-                >
-                  {editBoundaryMode ? "Exit Edit" : "Edit Shape"}
-                </Button>
-                <div className="text-[9px] text-muted-foreground">
-                  {aduBoundary.length} pts
-                </div>
-              </div>
+            {/* Slider */}
+            <div className="space-y-2 mb-4">
+              <Slider
+                value={[Math.sqrt(aduArea)]}
+                onValueChange={([value]) => {
+                  // Calculate new square size
+                  const targetArea = value * value;
+                  const sideLengthPx = Math.sqrt(targetArea) * pixelsPerFoot;
+                  const offset = (displaySize - sideLengthPx) / 2;
 
-              {/* Right Column: Slider */}
-              <div className="space-y-1">
-                <Slider
-                  value={[Math.sqrt(aduArea)]}
-                  onValueChange={([value]) => {
-                    // Calculate new square size
-                    const targetArea = value * value;
-                    const sideLengthPx = Math.sqrt(targetArea) * pixelsPerFoot;
-                    const offset = (displaySize - sideLengthPx) / 2;
-
-                    // Create a centered square with the target area
-                    setAduBoundary([
-                      { x: snapToGrid(offset), y: snapToGrid(offset) },
-                      { x: snapToGrid(offset + sideLengthPx), y: snapToGrid(offset) },
-                      { x: snapToGrid(offset + sideLengthPx), y: snapToGrid(offset + sideLengthPx) },
-                      { x: snapToGrid(offset), y: snapToGrid(offset + sideLengthPx) },
-                    ]);
-                  }}
-                  min={Math.sqrt(ADU_LIMITS.MIN_AREA)}
-                  max={Math.sqrt(ADU_LIMITS.MAX_AREA)}
-                  step={0.5}
-                  className="w-full"
-                />
-                <div className="flex justify-between text-[9px] text-muted-foreground">
-                  <span>{ADU_LIMITS.MIN_AREA} sq ft</span>
-                  <span>{ADU_LIMITS.MAX_AREA} sq ft</span>
-                </div>
+                  // Create a centered square with the target area
+                  setAduBoundary([
+                    { x: snapToGrid(offset), y: snapToGrid(offset) },
+                    { x: snapToGrid(offset + sideLengthPx), y: snapToGrid(offset) },
+                    { x: snapToGrid(offset + sideLengthPx), y: snapToGrid(offset + sideLengthPx) },
+                    { x: snapToGrid(offset), y: snapToGrid(offset + sideLengthPx) },
+                  ]);
+                }}
+                min={Math.sqrt(ADU_LIMITS.MIN_AREA)}
+                max={Math.sqrt(ADU_LIMITS.MAX_AREA)}
+                step={0.5}
+                className="w-full"
+              />
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>Min: {ADU_LIMITS.MIN_AREA} sq ft</span>
+                <span>Max: {ADU_LIMITS.MAX_AREA} sq ft</span>
               </div>
+            </div>
+
+            {/* Edit Shape Button */}
+            <div className="flex items-center justify-between pt-3 border-t">
+              <div>
+                <p className="text-sm font-medium">Custom Shape</p>
+                <p className="text-xs text-muted-foreground">
+                  {aduBoundary.length} corner points
+                </p>
+              </div>
+              <Button
+                variant={editBoundaryMode ? "default" : "outline"}
+                size="sm"
+                onClick={() => {
+                  setEditBoundaryMode(!editBoundaryMode);
+                  setSelectedRoomId(null);
+                  setSelectedBoundaryPointIndex(null);
+                }}
+                className={cn(
+                  "text-sm",
+                  !editBoundaryMode && "hover:text-foreground"
+                )}
+              >
+                {editBoundaryMode ? "Done Editing" : "Edit Shape"}
+              </Button>
             </div>
 
             {/* Edit Mode Instructions */}
             {editBoundaryMode && (
-              <p className="text-[9px] text-muted-foreground leading-tight mt-2">
-                <strong>Click</strong> to add • <strong>Drag</strong> to move • <strong>Right-click</strong> to delete
-                {selectedBoundaryPointIndex !== null && <span className="text-primary"> • Point {selectedBoundaryPointIndex + 1} selected</span>}
-              </p>
+              <div className="mt-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
+                <p className="text-sm text-foreground leading-relaxed">
+                  <strong>How to edit:</strong>
+                </p>
+                <ul className="text-sm text-muted-foreground mt-2 space-y-1">
+                  <li>• <strong>Click canvas</strong> to add a new corner</li>
+                  <li>• <strong>Drag corners</strong> to move them</li>
+                  <li>• <strong>Right-click corner</strong> to remove it</li>
+                </ul>
+                {selectedBoundaryPointIndex !== null && (
+                  <p className="text-sm text-primary font-medium mt-2">
+                    Point {selectedBoundaryPointIndex + 1} selected
+                  </p>
+                )}
+              </div>
             )}
 
             {/* Validation Message */}
             {(aduArea < ADU_LIMITS.MIN_AREA || aduArea > ADU_LIMITS.MAX_AREA) && (
-              <p className="text-[9px] text-destructive mt-2">
-                {aduArea < ADU_LIMITS.MIN_AREA
-                  ? `Min ${ADU_LIMITS.MIN_AREA} sq ft`
-                  : `Max ${ADU_LIMITS.MAX_AREA} sq ft`}
-              </p>
+              <div className="mt-3 p-3 bg-red-50 rounded-lg border border-red-200">
+                <p className="text-sm text-destructive font-medium">
+                  ⚠ {aduArea < ADU_LIMITS.MIN_AREA
+                    ? `ADU must be at least ${ADU_LIMITS.MIN_AREA} sq ft`
+                    : `ADU cannot exceed ${ADU_LIMITS.MAX_AREA} sq ft`}
+                </p>
+              </div>
             )}
           </Card>
         </div>
@@ -1524,7 +1821,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
               handlePanMove(e);
               if (!isPanning) handleMouseMove(e);
             }}
-            onMouseUp={(e) => {
+            onMouseUp={() => {
               handlePanEnd();
               if (!isPanning) handleMouseUp();
             }}
@@ -2080,7 +2377,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                         <Line
                           ref={(node) => {
                             if (node && isSelected) {
-                              doorRefs.current.set(door.id, node.getParent());
+                              const parent = node.getParent();
+                              if (parent) doorRefs.current.set(door.id, parent as Konva.Group);
                             }
                           }}
                           points={[-doorWidthPx / 2, 0, doorWidthPx / 2, 0]}
@@ -2238,7 +2536,8 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     <Rect
                       ref={(node) => {
                         if (node && isSelected) {
-                          windowRefs.current.set(window.id, node.getParent());
+                          const parent = node.getParent();
+                          if (parent) windowRefs.current.set(window.id, parent as Konva.Group);
                         }
                       }}
                       x={-windowWidthPx / 2 + 2}
@@ -2527,24 +2826,19 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                   rotateEnabled={false}
                   ignoreStroke={true}
                   keepRatio={false}
+                  centeredScaling={true}
                   boundBoxFunc={(oldBox, newBox) => {
-                    // Get the current window to know its position
-                    const currentWindow = windows.find(w => w.id === selectedWindowId);
-                    if (!currentWindow) return oldBox;
+                    // Snap width to grid (minimum 1 foot)
+                    const snappedWidth = Math.max(gridSize, snapToGrid(newBox.width));
 
-                    // Calculate new width in pixels from the scaled box
-                    const scale = newBox.width / oldBox.width;
-                    const newWidthPx = currentWindow.width * pixelsPerFoot * scale;
+                    // Keep center position stable by adjusting x based on width change
+                    const oldCenterX = oldBox.x + oldBox.width / 2;
+                    const newX = oldCenterX - snappedWidth / 2;
 
-                    // Snap to whole feet (minimum 1 foot)
-                    const newWidthFeet = Math.max(1, Math.round(newWidthPx / pixelsPerFoot));
-                    const snappedWidthPx = newWidthFeet * pixelsPerFoot;
-
-                    // Only allow width to change, keep everything else the same
                     return {
-                      x: oldBox.x,
+                      x: newX,
                       y: oldBox.y,
-                      width: snappedWidthPx,
+                      width: snappedWidth,
                       height: oldBox.height,
                       rotation: oldBox.rotation,
                     };
@@ -2554,26 +2848,17 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     if (node) {
                       const currentWindow = windows.find(w => w.id === selectedWindowId);
                       if (currentWindow) {
-                        // Calculate final width from transform
-                        const scaleX = node.scaleX();
-                        const newWidthPx = currentWindow.width * pixelsPerFoot * scaleX;
-                        const newWidthFeet = Math.max(1, Math.round(newWidthPx / pixelsPerFoot));
-                        const windowWidthPx = newWidthFeet * pixelsPerFoot;
+                        // Get the actual width from the node's bounding box
+                        const nodeWidth = node.width() * node.scaleX();
+                        const newWidthFeet = Math.max(1, Math.round(nodeWidth / pixelsPerFoot));
 
-                        const isVertical = currentWindow.rotation % 180 === 90;
-                        let snappedX, snappedY;
+                        // Get center position from node
+                        const centerX = node.x();
+                        const centerY = node.y();
 
-                        if (isVertical) {
-                          // Vertical: snap top/bottom edges to grid, center X to grid line
-                          const snappedTopEdge = snapToGrid(node.y() - windowWidthPx / 2);
-                          snappedY = snappedTopEdge + windowWidthPx / 2;
-                          snappedX = snapToGrid(node.x());
-                        } else {
-                          // Horizontal: snap left/right edges to grid, center Y to grid line
-                          const snappedLeftEdge = snapToGrid(node.x() - windowWidthPx / 2);
-                          snappedX = snappedLeftEdge + windowWidthPx / 2;
-                          snappedY = snapToGrid(node.y());
-                        }
+                        // Snap position to grid
+                        const snappedX = snapToGrid(centerX);
+                        const snappedY = snapToGrid(centerY);
 
                         setWindows(prev => prev.map(w =>
                           w.id === selectedWindowId ? {
@@ -2583,12 +2868,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                           } : w
                         ));
 
-                        // Update node position
-                        node.position({ x: snappedX, y: snappedY });
-
-                        // Reset transform
+                        // Reset transform scale
                         node.scaleX(1);
                         node.scaleY(1);
+                        node.position({ x: snappedX, y: snappedY });
 
                         // Force transformer to update
                         if (windowTransformerRef.current) {
@@ -2611,24 +2894,19 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                   rotateEnabled={false}
                   ignoreStroke={true}
                   keepRatio={false}
+                  centeredScaling={true}
                   boundBoxFunc={(oldBox, newBox) => {
-                    // Get the current opening to know its position
-                    const currentDoor = doors.find(d => d.id === selectedDoorId);
-                    if (!currentDoor) return oldBox;
+                    // Snap width to grid (minimum 2 feet for openings)
+                    const snappedWidth = Math.max(gridSize * 2, snapToGrid(newBox.width));
 
-                    // Calculate new width in pixels from the scaled box
-                    const scale = newBox.width / oldBox.width;
-                    const newWidthPx = currentDoor.width * pixelsPerFoot * scale;
+                    // Keep center position stable by adjusting x based on width change
+                    const oldCenterX = oldBox.x + oldBox.width / 2;
+                    const newX = oldCenterX - snappedWidth / 2;
 
-                    // Snap to whole feet (minimum 2 feet for openings)
-                    const newWidthFeet = Math.max(2, Math.round(newWidthPx / pixelsPerFoot));
-                    const snappedWidthPx = newWidthFeet * pixelsPerFoot;
-
-                    // Only allow width to change, keep everything else the same
                     return {
-                      x: oldBox.x,
+                      x: newX,
                       y: oldBox.y,
-                      width: snappedWidthPx,
+                      width: snappedWidth,
                       height: oldBox.height,
                       rotation: oldBox.rotation,
                     };
@@ -2638,26 +2916,17 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     if (node) {
                       const currentDoor = doors.find(d => d.id === selectedDoorId);
                       if (currentDoor) {
-                        // Calculate final width from transform
-                        const scaleX = node.scaleX();
-                        const newWidthPx = currentDoor.width * pixelsPerFoot * scaleX;
-                        const newWidthFeet = Math.max(2, Math.round(newWidthPx / pixelsPerFoot));
-                        const doorWidthPx = newWidthFeet * pixelsPerFoot;
+                        // Get the actual width from the node's bounding box
+                        const nodeWidth = node.width() * node.scaleX();
+                        const newWidthFeet = Math.max(2, Math.round(nodeWidth / pixelsPerFoot));
 
-                        const isVertical = currentDoor.rotation % 180 === 90;
-                        let snappedX, snappedY;
+                        // Get center position from node
+                        const centerX = node.x();
+                        const centerY = node.y();
 
-                        if (isVertical) {
-                          // Vertical: snap top/bottom edges to grid, center X to grid line
-                          const snappedTopEdge = snapToGrid(node.y() - doorWidthPx / 2);
-                          snappedY = snappedTopEdge + doorWidthPx / 2;
-                          snappedX = snapToGrid(node.x());
-                        } else {
-                          // Horizontal: snap left/right edges to grid, center Y to grid line
-                          const snappedLeftEdge = snapToGrid(node.x() - doorWidthPx / 2);
-                          snappedX = snappedLeftEdge + doorWidthPx / 2;
-                          snappedY = snapToGrid(node.y());
-                        }
+                        // Snap position to grid
+                        const snappedX = snapToGrid(centerX);
+                        const snappedY = snapToGrid(centerY);
 
                         setDoors(prev => prev.map(d =>
                           d.id === selectedDoorId ? {
@@ -2667,12 +2936,10 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                           } : d
                         ));
 
-                        // Update node position
-                        node.position({ x: snappedX, y: snappedY });
-
-                        // Reset transform
+                        // Reset transform scale
                         node.scaleX(1);
                         node.scaleY(1);
+                        node.position({ x: snappedX, y: snappedY });
 
                         // Force transformer to update
                         if (doorTransformerRef.current) {
@@ -2698,7 +2965,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     const snappedX = snapToGrid(newBox.x);
                     const snappedY = snapToGrid(newBox.y);
 
-                    // Minimum size check
+                    // Minimum size check (at least 1 foot)
                     if (snappedWidth < gridSize || snappedHeight < gridSize) {
                       return oldBox;
                     }
@@ -2712,11 +2979,12 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                     };
                   }}
                   enabledAnchors={[
-                    'top-left', 'top-center', 'top-right',
-                    'middle-left', 'middle-right',
-                    'bottom-left', 'bottom-center', 'bottom-right'
+                    'top-left', 'top-right',
+                    'bottom-left', 'bottom-right'
                   ]}
                   rotateEnabled={false}
+                  ignoreStroke={true}
+                  padding={2}
                 />
               </Layer>
             )}
@@ -2838,28 +3106,28 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         {/* Room List */}
         {rooms.length > 0 && (
           <Card className="p-4 space-y-3 shadow-md">
-            <Label className="text-sm font-semibold text-foreground">Rooms ({rooms.length})</Label>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
+            <Label className="text-base font-semibold text-foreground">Rooms ({rooms.length})</Label>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
               {rooms.map((room) => (
                 <div
                   key={room.id}
                   onClick={() => setSelectedRoomId(room.id)}
                   className={cn(
-                    "flex items-center justify-between p-2 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.02] transition-all cursor-pointer",
-                    selectedRoomId === room.id && "ring-2 ring-primary shadow-md scale-[1.02]"
+                    "flex items-center justify-between p-3 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.01] transition-all cursor-pointer",
+                    selectedRoomId === room.id && "ring-2 ring-primary shadow-md scale-[1.01]"
                   )}
                 >
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
                     <div
-                      className="w-6 h-6 rounded flex-shrink-0"
+                      className="w-8 h-8 rounded flex-shrink-0 border"
                       style={{ backgroundColor: room.color }}
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium text-xs truncate">{room.name}</div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="font-medium text-sm truncate">{room.name}</div>
+                      <div className="text-sm text-muted-foreground">
                         {Math.round(calculateEffectiveArea(room))} sq ft
                         {Math.round(calculateEffectiveArea(room)) !== room.area && (
-                          <span className="text-[10px]"> ({room.area} total)</span>
+                          <span className="text-xs"> ({room.area} total)</span>
                         )}
                       </div>
                       {room.type === "other" && (
@@ -2873,21 +3141,22 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                             setRoomDescriptions(newDescriptions);
                           }}
                           onClick={(e) => e.stopPropagation()}
-                          className="h-6 text-xs mt-1"
+                          className="h-8 text-sm mt-2"
                         />
                       )}
                     </div>
                   </div>
                   <Button
                     variant="ghost"
-                    size="icon"
+                    size="icon-sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteRoom(room.id);
+                      confirmDeleteRoom(room.id, room.name);
                     }}
-                    className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10 flex-shrink-0"
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10 flex-shrink-0"
+                    title="Delete room"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               ))}
@@ -2898,34 +3167,35 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         {/* Door List */}
         {doors.length > 0 && (
           <Card className="p-4 space-y-3 shadow-md">
-            <Label className="text-sm font-semibold text-foreground">Doors ({doors.length})</Label>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
+            <Label className="text-base font-semibold text-foreground">Doors ({doors.length})</Label>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
               {doors.map((door) => (
                 <div
                   key={door.id}
                   onClick={() => setSelectedDoorId(door.id)}
                   className={cn(
-                    "flex items-center justify-between p-2 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.02] transition-all cursor-pointer",
-                    selectedDoorId === door.id && "ring-2 ring-primary shadow-md scale-[1.02]"
+                    "flex items-center justify-between p-3 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.01] transition-all cursor-pointer",
+                    selectedDoorId === door.id && "ring-2 ring-primary shadow-md scale-[1.01]"
                   )}
                 >
-                  <div className="flex items-center gap-2 flex-1">
-                    <span>{DOOR_CONFIGS[door.type].icon}</span>
-                    <div className="text-xs">
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-xl">{DOOR_CONFIGS[door.type].icon}</span>
+                    <div className="text-sm">
                       <div className="font-medium">{DOOR_CONFIGS[door.type].label}</div>
                       <div className="text-muted-foreground">{door.width}ft wide</div>
                     </div>
                   </div>
                   <Button
                     variant="ghost"
-                    size="icon"
+                    size="icon-sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteDoor(door.id);
+                      confirmDeleteDoor(door.id, DOOR_CONFIGS[door.type].label);
                     }}
-                    className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                    title="Delete door"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               ))}
@@ -2936,34 +3206,35 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         {/* Window List */}
         {windows.length > 0 && (
           <Card className="p-4 space-y-3 shadow-md">
-            <Label className="text-sm font-semibold text-foreground">Windows ({windows.length})</Label>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
+            <Label className="text-base font-semibold text-foreground">Windows ({windows.length})</Label>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
               {windows.map((window) => (
                 <div
                   key={window.id}
                   onClick={() => setSelectedWindowId(window.id)}
                   className={cn(
-                    "flex items-center justify-between p-2 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.02] transition-all cursor-pointer",
-                    selectedWindowId === window.id && "ring-2 ring-primary shadow-md scale-[1.02]"
+                    "flex items-center justify-between p-3 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.01] transition-all cursor-pointer",
+                    selectedWindowId === window.id && "ring-2 ring-primary shadow-md scale-[1.01]"
                   )}
                 >
-                  <div className="flex items-center gap-2 flex-1">
-                    <span>{WINDOW_CONFIGS[window.type].icon}</span>
-                    <div className="text-xs">
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-xl">{WINDOW_CONFIGS[window.type].icon}</span>
+                    <div className="text-sm">
                       <div className="font-medium">{WINDOW_CONFIGS[window.type].label}</div>
                       <div className="text-muted-foreground">{window.width}×{window.height}ft</div>
                     </div>
                   </div>
                   <Button
                     variant="ghost"
-                    size="icon"
+                    size="icon-sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteWindow(window.id);
+                      confirmDeleteWindow(window.id, WINDOW_CONFIGS[window.type].label);
                     }}
-                    className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                    title="Delete window"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               ))}
@@ -2971,154 +3242,38 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           </Card>
         )}
 
-        {/* Furniture Library */}
-        <Card className="p-4 space-y-3 shadow-md">
-          <Label className="text-sm font-semibold text-foreground">Furniture Library</Label>
-          <div className="space-y-3">
-            {/* Bedroom */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Bedroom</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
-                  .filter(([, config]) => config.category === "bedroom")
-                  .map(([type, config]) => (
-                    <Button
-                      key={type}
-                      variant={selectedFurnitureType === type ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setSelectedFurnitureType(type)}
-                      className="flex flex-col items-center gap-1 h-auto py-2"
-                    >
-                      <config.icon className="h-4 w-4" />
-                      <span className="text-xs">{config.name}</span>
-                    </Button>
-                  ))}
-              </div>
-            </div>
-
-            {/* Bathroom */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Bathroom</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
-                  .filter(([, config]) => config.category === "bathroom")
-                  .map(([type, config]) => (
-                    <Button
-                      key={type}
-                      variant={selectedFurnitureType === type ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setSelectedFurnitureType(type)}
-                      className="flex flex-col items-center gap-1 h-auto py-2"
-                    >
-                      <config.icon className="h-4 w-4" />
-                      <span className="text-xs">{config.name}</span>
-                    </Button>
-                  ))}
-              </div>
-            </div>
-
-            {/* Kitchen */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Kitchen</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
-                  .filter(([_, config]) => config.category === "kitchen")
-                  .map(([type, config]) => (
-                    <Button
-                      key={type}
-                      variant={selectedFurnitureType === type ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setSelectedFurnitureType(type)}
-                      className="flex flex-col items-center gap-1 h-auto py-2"
-                    >
-                      <config.icon className="h-4 w-4" />
-                      <span className="text-xs">{config.name}</span>
-                    </Button>
-                  ))}
-              </div>
-            </div>
-
-            {/* Living Room */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Living Room</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
-                  .filter(([_, config]) => config.category === "living")
-                  .map(([type, config]) => (
-                    <Button
-                      key={type}
-                      variant={selectedFurnitureType === type ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setSelectedFurnitureType(type)}
-                      className="flex flex-col items-center gap-1 h-auto py-2"
-                    >
-                      <config.icon className="h-4 w-4" />
-                      <span className="text-xs">{config.name}</span>
-                    </Button>
-                  ))}
-              </div>
-            </div>
-
-            {/* Office */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Office</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.entries(FURNITURE_CONFIG) as [FurnitureType, typeof FURNITURE_CONFIG[FurnitureType]][])
-                  .filter(([_, config]) => config.category === "office")
-                  .map(([type, config]) => (
-                    <Button
-                      key={type}
-                      variant={selectedFurnitureType === type ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setSelectedFurnitureType(type)}
-                      className="flex flex-col items-center gap-1 h-auto py-2"
-                    >
-                      <config.icon className="h-4 w-4" />
-                      <span className="text-xs">{config.name}</span>
-                    </Button>
-                  ))}
-              </div>
-            </div>
-
-            {selectedFurnitureType && (
-              <div className="text-xs text-muted-foreground p-2 bg-accent/50 rounded-md">
-                Click on the canvas to place {FURNITURE_CONFIG[selectedFurnitureType].name}
-              </div>
-            )}
-          </div>
-        </Card>
-
         {/* Furniture List */}
         {furniture.length > 0 && (
           <Card className="p-4 space-y-3 shadow-md">
-            <Label className="text-sm font-semibold text-foreground">Furniture ({furniture.length})</Label>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
+            <Label className="text-base font-semibold text-foreground">Furniture ({furniture.length})</Label>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
               {furniture.map((item) => (
                 <div
                   key={item.id}
                   onClick={() => setSelectedFurnitureId(item.id)}
                   className={cn(
-                    "flex items-center justify-between p-2 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.02] transition-all cursor-pointer",
-                    selectedFurnitureId === item.id && "ring-2 ring-primary shadow-md scale-[1.02]"
+                    "flex items-center justify-between p-3 rounded-md border bg-card hover:bg-accent/50 hover:shadow-sm hover:scale-[1.01] transition-all cursor-pointer",
+                    selectedFurnitureId === item.id && "ring-2 ring-primary shadow-md scale-[1.01]"
                   )}
                 >
-                  <div className="flex items-center gap-2 flex-1">
-                    {React.createElement(FURNITURE_CONFIG[item.type].icon, { className: "h-4 w-4" })}
-                    <div className="text-xs">
+                  <div className="flex items-center gap-3 flex-1">
+                    {React.createElement(FURNITURE_CONFIG[item.type].icon, { className: "h-5 w-5" })}
+                    <div className="text-sm">
                       <div className="font-medium">{FURNITURE_CONFIG[item.type].name}</div>
                       <div className="text-muted-foreground">{item.width}×{item.height}ft</div>
                     </div>
                   </div>
                   <Button
                     variant="ghost"
-                    size="icon"
+                    size="icon-sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteFurniture(item.id);
+                      confirmDeleteFurniture(item.id, FURNITURE_CONFIG[item.type].name);
                     }}
-                    className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                    title="Delete furniture"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               ))}
@@ -3127,6 +3282,31 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
         )}
       </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialog.open} onOpenChange={(open) => !open && setDeleteDialog({ open: false, type: null, id: null, name: "" })}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-lg">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Delete {deleteDialog.type}?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-base">
+              Are you sure you want to delete <strong>&quot;{deleteDialog.name}&quot;</strong>?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="text-base">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              className="bg-destructive text-white hover:bg-destructive/90 text-base"
+            >
+              Yes, Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
