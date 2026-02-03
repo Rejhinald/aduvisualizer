@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef } from "react";
 import type { Point, DoorType, WindowType } from "@/lib/types";
+import { DOOR_CONFIGS, WINDOW_CONFIGS } from "@/lib/constants";
 import type { FurnitureType, CanvasConfig } from "../types";
+import { FURNITURE_CONFIG } from "../constants";
 
 interface DraggedItem {
   type: "furniture" | "door" | "window";
@@ -26,7 +28,7 @@ export function useDragDrop({
   onPlaceDoor,
   onPlaceWindow,
 }: UseDragDropOptions) {
-  const { displaySize } = config;
+  const { displaySize, pixelsPerFoot } = config;
   const [draggedItem, setDraggedItem] = useState<DraggedItem | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -72,9 +74,37 @@ export function useDragDrop({
     const worldX = (mouseX - panOffset.x) / zoom;
     const worldY = (mouseY - panOffset.y) / zoom;
 
+    // Calculate centered position based on item type and dimensions
+    let centeredX = worldX;
+    let centeredY = worldY;
+
+    if (type === "furniture") {
+      const furnitureConfig = FURNITURE_CONFIG[subType as FurnitureType];
+      if (furnitureConfig) {
+        // Subtract half the item dimensions (in pixels) to center on mouse
+        centeredX = worldX - (furnitureConfig.width * pixelsPerFoot) / 2;
+        centeredY = worldY - (furnitureConfig.height * pixelsPerFoot) / 2;
+      }
+    } else if (type === "door") {
+      const doorConfig = DOOR_CONFIGS[subType as DoorType];
+      if (doorConfig) {
+        // Doors are centered on their position, so we keep the mouse position
+        // (door position is the center/hinge point)
+        centeredX = worldX;
+        centeredY = worldY;
+      }
+    } else if (type === "window") {
+      const windowConfig = WINDOW_CONFIGS[subType as WindowType];
+      if (windowConfig) {
+        // Windows are also centered on their position
+        centeredX = worldX;
+        centeredY = worldY;
+      }
+    }
+
     // Snap to grid
-    const x = snapToGrid(worldX);
-    const y = snapToGrid(worldY);
+    const x = snapToGrid(centeredX);
+    const y = snapToGrid(centeredY);
 
     // Place the item based on type
     if (type === "furniture") {
@@ -86,7 +116,7 @@ export function useDragDrop({
     }
 
     setDraggedItem(null);
-  }, [zoom, panOffset, snapToGrid, onPlaceFurniture, onPlaceDoor, onPlaceWindow]);
+  }, [zoom, panOffset, snapToGrid, pixelsPerFoot, onPlaceFurniture, onPlaceDoor, onPlaceWindow]);
 
   return {
     draggedItem,

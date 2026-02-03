@@ -7,3 +7,7 @@ export { useAutoSave } from "./use-auto-save";
 export { useZoomPan } from "./use-zoom-pan";
 export { useDragDrop } from "./use-drag-drop";
 export { useDrawing } from "./use-drawing";
+export { useVersionHistory } from "./use-version-history";
+export type { EditorSnapshot, EditorViewSettings } from "./use-version-history";
+export { useLotBoundaryDrawing } from "./use-lot-boundary-drawing";
+export { useEditorSettings } from "./use-editor-settings";

@@ -2,6 +2,17 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import type { Room, Door, Window, Point } from "@/lib/types";
 import type { Furniture, CanvasConfig } from "../types";
 
+interface EditorData {
+  rooms: Room[];
+  doors: Door[];
+  windows: Window[];
+  furniture: Furniture[];
+  aduBoundary: Point[];
+  pixelsPerFoot: number;
+  canvasWidth: number;
+  canvasHeight: number;
+}
+
 interface UseAutoSaveOptions {
   rooms: Room[];
   doors: Door[];
@@ -10,7 +21,7 @@ interface UseAutoSaveOptions {
   aduBoundary: Point[];
   config: CanvasConfig;
   isSaving: boolean;
-  saveToCloud: (data: unknown) => Promise<boolean>;
+  saveToCloud: (data: EditorData) => Promise<boolean>;
   debounceMs?: number;
 }
 

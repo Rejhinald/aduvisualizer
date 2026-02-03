@@ -1,0 +1,1275 @@
+"use client";
+
+/**
+ * Floor Plan Editor - Modular Version
+ *
+ * This component is composed of modular parts located in:
+ * - components/floor-plan-editor/types.ts - Type definitions
+ * - components/floor-plan-editor/constants.ts - Constants and configs
+ * - components/floor-plan-editor/hooks/ - Custom hooks
+ * - components/floor-plan-editor/canvas/ - Canvas components
+ * - components/floor-plan-editor/sidebar/ - Sidebar components
+ * - components/floor-plan-editor/overlay/ - Floating overlay components
+ * - components/floor-plan-editor/lists/ - List components
+ */
+
+import React, { useRef, useEffect, useCallback, useState } from "react";
+import { Stage, Layer } from "react-konva";
+import type Konva from "konva";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Undo2, Redo2, Cloud, CloudOff, Loader2, History, AlertTriangle } from "lucide-react";
+import type { FloorPlan, Point, RoomType, DoorType, WindowType } from "@/lib/types";
+import { DOOR_CONFIGS, WINDOW_CONFIGS } from "@/lib/constants";
+import { useWizard } from "@/lib/context/wizard-context";
+import { useActionLogger } from "@/lib/hooks/use-action-logger";
+
+// Import modular components
+import {
+  useCanvasConfig,
+  useFurnitureImages,
+  useZoomPan,
+  useDragDrop,
+  useDrawing,
+} from "./floor-plan-editor/hooks";
+import {
+  Grid,
+  ADUBoundary,
+  Rooms,
+  Doors,
+  Windows,
+  Furniture,
+  DrawingPreview,
+} from "./floor-plan-editor/canvas";
+import {
+  ModeSelector,
+  RoomSelector,
+  DoorSelector,
+  WindowSelector,
+  FurnitureSelector,
+} from "./floor-plan-editor/sidebar";
+import {
+  ADUAreaIndicator,
+  Compass,
+  CanvasControls,
+} from "./floor-plan-editor/overlay";
+import {
+  RoomList,
+  DoorList,
+  WindowList,
+  FurnitureList,
+} from "./floor-plan-editor/lists";
+import type {
+  Furniture as FurnitureItem,
+  FurnitureType,
+  PlacementMode,
+} from "./floor-plan-editor/types";
+import { FURNITURE_CONFIG, MAX_HISTORY } from "./floor-plan-editor/constants";
+
+// Re-export types for external use
+export type { FurnitureType };
+export type { FurnitureItem as Furniture };
+
+interface FloorPlanEditorProps {
+  onPlanChange: (plan: FloorPlan) => void;
+}
+
+export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
+  // Wizard context for cloud save
+  const { isSaving, saveError, lastSavedAt, projectId, blueprintId } = useWizard();
+
+  // Action logger for tracking all editor changes
+  const { logMove, logResize, logCreate, logDelete, logVertexMove } = useActionLogger({
+    projectId,
+    blueprintId,
+    enabled: !!projectId,
+  });
+
+  // Canvas configuration
+  const config = useCanvasConfig();
+  const { pixelsPerFoot, gridSize, displaySize, extendedCanvasSize } = config;
+
+  // Load furniture images
+  const furnitureImages = useFurnitureImages();
+
+  // Calculate default boundary position
+  const defaultBoundarySize = Math.sqrt(600) * pixelsPerFoot;
+  const defaultOffset = (extendedCanvasSize - defaultBoundarySize) / 2;
+
+  // Core state
+  const [rooms, setRooms] = useState<FloorPlan["rooms"]>([]);
+  const [doors, setDoors] = useState<FloorPlan["doors"]>([]);
+  const [windows, setWindows] = useState<FloorPlan["windows"]>([]);
+  const [furniture, setFurniture] = useState<FurnitureItem[]>([]);
+  const [aduBoundary, setAduBoundary] = useState<Point[]>([
+    { x: defaultOffset, y: defaultOffset },
+    { x: defaultOffset + defaultBoundarySize, y: defaultOffset },
+    { x: defaultOffset + defaultBoundarySize, y: defaultOffset + defaultBoundarySize },
+    { x: defaultOffset, y: defaultOffset + defaultBoundarySize },
+  ]);
+
+  // Selection state
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedDoorId, setSelectedDoorId] = useState<string | null>(null);
+  const [selectedWindowId, setSelectedWindowId] = useState<string | null>(null);
+  const [selectedFurnitureId, setSelectedFurnitureId] = useState<string | null>(null);
+  const [selectedBoundaryPointIndex, setSelectedBoundaryPointIndex] = useState<number | null>(null);
+
+  // Mode state
+  const [placementMode, setPlacementMode] = useState<PlacementMode>("select");
+  const [selectedRoomType, setSelectedRoomType] = useState<RoomType | null>("bedroom");
+  const [drawMode, setDrawMode] = useState<"rectangle" | "polygon">("rectangle");
+
+  // UI state
+  const [showGrid, setShowGrid] = useState(true);
+  const [editBoundaryMode, setEditBoundaryMode] = useState(false);
+  const [isCanvasLocked, setIsCanvasLocked] = useState(false);
+  const [furnitureSnapMode, setFurnitureSnapMode] = useState<"grid" | "half" | "free">("half");
+
+  // Delete confirmation dialog
+  const [deleteDialog, setDeleteDialog] = useState<{
+    open: boolean;
+    type: "room" | "door" | "window" | "furniture" | null;
+    id: string | null;
+    name: string;
+  }>({ open: false, type: null, id: null, name: "" });
+
+  // Restore dialog
+  const [restoreDialog, setRestoreDialog] = useState(false);
+
+  // Room descriptions for "other" room type
+  const [roomDescriptions, setRoomDescriptions] = useState<Map<string, string>>(new Map());
+
+  // Auto-save functionality
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isInitialLoadRef = useRef(true);
+  const lastSaveHashRef = useRef<string>("");
+
+  // Refs
+  const stageRef = useRef<Konva.Stage | null>(null);
+  const transformerRef = useRef<Konva.Transformer | null>(null);
+  const windowTransformerRef = useRef<Konva.Transformer | null>(null);
+  const openingTransformerRef = useRef<Konva.Transformer | null>(null);
+  const roomRefs = useRef<Map<string, Konva.Rect>>(new Map());
+  const windowRefs = useRef<Map<string, Konva.Rect>>(new Map());
+  const openingRefs = useRef<Map<string, Konva.Rect>>(new Map());
+
+  // Zoom and pan
+  const {
+    zoom,
+    panOffset,
+    stageToWorld,
+    handleZoomIn,
+    handleZoomOut,
+    handleWheel,
+    handlePanStart,
+    handlePanMove,
+    handlePanEnd,
+    resetView,
+  } = useZoomPan({ config, isCanvasLocked });
+
+  // Snap to grid
+  const snapToGrid = useCallback((value: number) => {
+    return Math.round(value / gridSize) * gridSize;
+  }, [gridSize]);
+
+  // Constrain to canvas
+  const constrainToCanvas = useCallback((point: Point): Point => {
+    return {
+      x: Math.max(0, Math.min(point.x, extendedCanvasSize)),
+      y: Math.max(0, Math.min(point.y, extendedCanvasSize)),
+    };
+  }, [extendedCanvasSize]);
+
+  // Calculate polygon area
+  const calculatePolygonArea = useCallback((vertices: Point[]): number => {
+    if (vertices.length < 3) return 0;
+    let area = 0;
+    for (let i = 0; i < vertices.length; i++) {
+      const j = (i + 1) % vertices.length;
+      area += vertices[i].x * vertices[j].y;
+      area -= vertices[j].x * vertices[i].y;
+    }
+    area = Math.abs(area) / 2;
+    return area / (pixelsPerFoot * pixelsPerFoot);
+  }, [pixelsPerFoot]);
+
+  // Add furniture handler
+  const handleAddFurniture = useCallback((type: FurnitureType, position: Point) => {
+    const furnitureConfig = FURNITURE_CONFIG[type];
+    const newFurniture: FurnitureItem = {
+      id: `furniture-${Date.now()}-${Math.random()}`,
+      type,
+      position,
+      rotation: 0,
+      width: furnitureConfig.width,
+      height: furnitureConfig.height,
+    };
+    setFurniture(prev => [...prev, newFurniture]);
+    setSelectedFurnitureId(newFurniture.id);
+    logCreate("furniture", newFurniture.id, { type, position });
+  }, [logCreate]);
+
+  // Add door handler
+  const handleAddDoor = useCallback((position: Point, doorType: DoorType) => {
+    const doorWidth = DOOR_CONFIGS[doorType].width;
+    const newDoor = {
+      id: crypto.randomUUID(),
+      type: doorType,
+      position,
+      rotation: 0,
+      width: doorWidth,
+    };
+    setDoors(prev => [...prev, newDoor]);
+    logCreate("door", newDoor.id, { type: doorType, position });
+  }, [logCreate]);
+
+  // Add window handler
+  const handleAddWindow = useCallback((position: Point, windowType: WindowType) => {
+    const windowConfig = WINDOW_CONFIGS[windowType];
+    const newWindow = {
+      id: crypto.randomUUID(),
+      type: windowType,
+      position,
+      rotation: 0,
+      width: windowConfig.width,
+      height: windowConfig.height,
+    };
+    setWindows(prev => [...prev, newWindow]);
+    logCreate("window", newWindow.id, { type: windowType, position });
+  }, [logCreate]);
+
+  // Drag and drop
+  const {
+    canvasContainerRef,
+    handleDragStart,
+    handleDragEnd,
+    handleCanvasDragOver,
+    handleCanvasDrop,
+  } = useDragDrop({
+    config,
+    zoom,
+    panOffset,
+    snapToGrid,
+    onPlaceFurniture: handleAddFurniture,
+    onPlaceDoor: handleAddDoor,
+    onPlaceWindow: handleAddWindow,
+  });
+
+  // Drawing
+  const {
+    isDrawing,
+    currentRect,
+    polygonPoints,
+    handleMouseDown: drawingMouseDown,
+    handleMouseMove: drawingMouseMove,
+    handleMouseUp: drawingMouseUp,
+    completePolygon,
+    cancelPolygon,
+    resetDrawing,
+  } = useDrawing({
+    config,
+    drawMode,
+    selectedRoomType,
+    rooms,
+    stageToWorld,
+    snapToGrid,
+    onAddRoom: (room) => {
+      setRooms(prev => [...prev, room]);
+    },
+    logCreate,
+  });
+
+  // History state
+  interface HistoryState {
+    rooms: typeof rooms;
+    doors: typeof doors;
+    windows: typeof windows;
+    furniture: FurnitureItem[];
+    aduBoundary: Point[];
+  }
+  const [history, setHistory] = useState<HistoryState[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const isUndoingOrRedoing = useRef(false);
+  const hasInitializedHistory = useRef(false);
+
+  // Save to history
+  const saveToHistory = useCallback(() => {
+    if (isUndoingOrRedoing.current) return;
+
+    const newState: HistoryState = {
+      rooms: JSON.parse(JSON.stringify(rooms)),
+      doors: JSON.parse(JSON.stringify(doors)),
+      windows: JSON.parse(JSON.stringify(windows)),
+      furniture: JSON.parse(JSON.stringify(furniture)),
+      aduBoundary: JSON.parse(JSON.stringify(aduBoundary)),
+    };
+
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newState);
+
+    if (newHistory.length > MAX_HISTORY) {
+      newHistory.shift();
+    }
+
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  }, [rooms, doors, windows, furniture, aduBoundary, history, historyIndex]);
+
+  // Undo
+  const undo = useCallback(() => {
+    if (historyIndex > 0) {
+      isUndoingOrRedoing.current = true;
+      const previousState = history[historyIndex - 1];
+      setRooms(JSON.parse(JSON.stringify(previousState.rooms)));
+      setDoors(JSON.parse(JSON.stringify(previousState.doors)));
+      setWindows(JSON.parse(JSON.stringify(previousState.windows)));
+      setFurniture(JSON.parse(JSON.stringify(previousState.furniture)));
+      setAduBoundary(JSON.parse(JSON.stringify(previousState.aduBoundary)));
+      setHistoryIndex(historyIndex - 1);
+      setSelectedRoomId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setSelectedFurnitureId(null);
+      setTimeout(() => { isUndoingOrRedoing.current = false; }, 100);
+    }
+  }, [historyIndex, history]);
+
+  // Redo
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      isUndoingOrRedoing.current = true;
+      const nextState = history[historyIndex + 1];
+      setRooms(JSON.parse(JSON.stringify(nextState.rooms)));
+      setDoors(JSON.parse(JSON.stringify(nextState.doors)));
+      setWindows(JSON.parse(JSON.stringify(nextState.windows)));
+      setFurniture(JSON.parse(JSON.stringify(nextState.furniture)));
+      setAduBoundary(JSON.parse(JSON.stringify(nextState.aduBoundary)));
+      setHistoryIndex(historyIndex + 1);
+      setSelectedRoomId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setSelectedFurnitureId(null);
+      setTimeout(() => { isUndoingOrRedoing.current = false; }, 100);
+    }
+  }, [historyIndex, history]);
+
+  // Initialize history on mount
+  useEffect(() => {
+    if (!hasInitializedHistory.current) {
+      hasInitializedHistory.current = true;
+      // Use setTimeout to avoid synchronous setState in effect
+      setTimeout(() => {
+        const initialState: HistoryState = {
+          rooms: [],
+          doors: [],
+          windows: [],
+          furniture: [],
+          aduBoundary: [
+            { x: defaultOffset, y: defaultOffset },
+            { x: defaultOffset + defaultBoundarySize, y: defaultOffset },
+            { x: defaultOffset + defaultBoundarySize, y: defaultOffset + defaultBoundarySize },
+            { x: defaultOffset, y: defaultOffset + defaultBoundarySize },
+          ],
+        };
+        setHistory([initialState]);
+        setHistoryIndex(0);
+      }, 0);
+    }
+  }, [defaultOffset, defaultBoundarySize]);
+
+  // Save to history on changes
+  useEffect(() => {
+    if (!hasInitializedHistory.current || isUndoingOrRedoing.current) return;
+    const timeoutId = setTimeout(() => saveToHistory(), 300);
+    return () => clearTimeout(timeoutId);
+  }, [rooms, doors, windows, furniture, aduBoundary, saveToHistory]);
+
+  // Calculate total area
+  const totalArea = rooms.reduce((sum, room) => sum + room.area, 0);
+
+  // Attach transformer to selected room
+  useEffect(() => {
+    const transformer = transformerRef.current;
+    if (!transformer) return;
+
+    if (selectedRoomId) {
+      const selectedRoom = rooms.find(r => r.id === selectedRoomId);
+      const node = roomRefs.current.get(selectedRoomId);
+
+      // Only attach transformer to rectangle rooms
+      if (selectedRoom && selectedRoom.vertices.length === 4 && node) {
+        transformer.nodes([node]);
+        transformer.getLayer()?.batchDraw();
+      } else {
+        transformer.nodes([]);
+        transformer.getLayer()?.batchDraw();
+      }
+    } else {
+      transformer.nodes([]);
+      transformer.getLayer()?.batchDraw();
+    }
+  }, [selectedRoomId, rooms]);
+
+  // Attach window transformer to selected window
+  useEffect(() => {
+    if (windowTransformerRef.current && selectedWindowId) {
+      const node = windowRefs.current.get(selectedWindowId);
+      if (node) {
+        windowTransformerRef.current.nodes([node]);
+        windowTransformerRef.current.getLayer()?.batchDraw();
+      }
+    } else if (windowTransformerRef.current) {
+      windowTransformerRef.current.nodes([]);
+    }
+  }, [selectedWindowId]);
+
+  // Attach opening transformer to selected opening (doors with type "opening")
+  useEffect(() => {
+    const selectedDoor = doors.find(d => d.id === selectedDoorId);
+    if (openingTransformerRef.current && selectedDoorId && selectedDoor?.type === 'opening') {
+      const node = openingRefs.current.get(selectedDoorId);
+      if (node) {
+        openingTransformerRef.current.nodes([node]);
+        openingTransformerRef.current.getLayer()?.batchDraw();
+      }
+    } else if (openingTransformerRef.current) {
+      openingTransformerRef.current.nodes([]);
+    }
+  }, [selectedDoorId, doors]);
+
+  // Generate a hash of current state to detect actual changes
+  const getStateHash = useCallback(() => {
+    return JSON.stringify({
+      rooms: rooms.map(r => ({ id: r.id, vertices: r.vertices, name: r.name, type: r.type })),
+      doors: doors.map(d => ({ id: d.id, position: d.position, width: d.width, rotation: d.rotation, type: d.type })),
+      windows: windows.map(w => ({ id: w.id, position: w.position, width: w.width, rotation: w.rotation })),
+      furniture: furniture.map(f => ({ id: f.id, position: f.position, width: f.width, height: f.height, rotation: f.rotation })),
+      boundary: aduBoundary,
+    });
+  }, [rooms, doors, windows, furniture, aduBoundary]);
+
+  // Auto-save effect (debounced)
+  useEffect(() => {
+    // Skip initial load
+    if (isInitialLoadRef.current) {
+      isInitialLoadRef.current = false;
+      lastSaveHashRef.current = getStateHash();
+      return;
+    }
+
+    // Skip if auto-save disabled or already saving
+    if (!autoSaveEnabled || isSaving) return;
+
+    // Skip if no actual changes (compare hash)
+    const currentHash = getStateHash();
+    if (currentHash === lastSaveHashRef.current) return;
+
+    // Clear existing timer
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+
+    // Set new debounced save timer (2 second delay)
+    autoSaveTimerRef.current = setTimeout(() => {
+      lastSaveHashRef.current = currentHash;
+      // Auto-save is handled by wizard context - this just tracks changes
+    }, 2000);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [rooms, doors, windows, furniture, aduBoundary, autoSaveEnabled, isSaving, getStateHash]);
+
+  // Restore from cloud function
+  const restoreFromCloud = useCallback(() => {
+    // This would be implemented with your cloud restore logic
+    // For now, just close the dialog
+    setRestoreDialog(false);
+  }, []);
+
+  // Update parent with floor plan (including room descriptions for "other" type)
+  useEffect(() => {
+    const roomsWithDescriptions = rooms.map(room => ({
+      ...room,
+      description: room.type === "other" ? roomDescriptions.get(room.id) : undefined,
+    }));
+
+    const floorPlan: FloorPlan = {
+      id: crypto.randomUUID(),
+      rooms: roomsWithDescriptions,
+      walls: [],
+      doors,
+      windows,
+      totalArea,
+      gridSize: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    onPlanChange(floorPlan);
+  }, [rooms, doors, windows, totalArea, roomDescriptions, onPlanChange]);
+
+  // Handle mouse events on canvas
+  const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    const clickedOnEmpty = e.target === e.target.getStage();
+
+    if (clickedOnEmpty) {
+      setSelectedRoomId(null);
+      setSelectedDoorId(null);
+      setSelectedWindowId(null);
+      setSelectedBoundaryPointIndex(null);
+      setSelectedFurnitureId(null);
+
+      if (placementMode === "room" && selectedRoomType) {
+        drawingMouseDown(e);
+      }
+    }
+  }, [placementMode, selectedRoomType, drawingMouseDown]);
+
+  // Handle room drag end
+  const handleRoomDragEnd = useCallback((roomId: string, e: Konva.KonvaEventObject<DragEvent>) => {
+    const node = e.target;
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) return;
+
+    const x = snapToGrid(node.x());
+    const y = snapToGrid(node.y());
+    const previousPosition = { x: room.vertices[0].x, y: room.vertices[0].y };
+
+    if (room.vertices.length === 4) {
+      const width = room.vertices[1].x - room.vertices[0].x;
+      const height = room.vertices[2].y - room.vertices[0].y;
+
+      setRooms(rooms.map((r) => {
+        if (r.id === roomId) {
+          return {
+            ...r,
+            vertices: [
+              { x, y },
+              { x: x + width, y },
+              { x: x + width, y: y + height },
+              { x, y: y + height },
+            ],
+          };
+        }
+        return r;
+      }));
+
+      node.position({ x, y });
+      logMove("room", roomId, previousPosition, { x, y });
+    }
+  }, [rooms, snapToGrid, logMove]);
+
+  // Handle room transform
+  const handleRoomTransform = useCallback((roomId: string, e: Konva.KonvaEventObject<Event>) => {
+    const node = e.target;
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+
+    const room = rooms.find(r => r.id === roomId);
+    const previousWidth = room ? room.vertices[1].x - room.vertices[0].x : 0;
+    const previousHeight = room ? room.vertices[2].y - room.vertices[0].y : 0;
+
+    const newWidth = snapToGrid(node.width() * scaleX);
+    const newHeight = snapToGrid(node.height() * scaleY);
+    const x = snapToGrid(node.x());
+    const y = snapToGrid(node.y());
+
+    const widthFeet = newWidth / pixelsPerFoot;
+    const heightFeet = newHeight / pixelsPerFoot;
+    const area = widthFeet * heightFeet;
+
+    setRooms(rooms.map((r) => {
+      if (r.id === roomId) {
+        return {
+          ...r,
+          vertices: [
+            { x, y },
+            { x: x + newWidth, y },
+            { x: x + newWidth, y: y + newHeight },
+            { x, y: y + newHeight },
+          ],
+          area: Math.round(area),
+        };
+      }
+      return r;
+    }));
+
+    node.scaleX(1);
+    node.scaleY(1);
+    node.width(newWidth);
+    node.height(newHeight);
+    node.position({ x, y });
+
+    logResize("room", roomId, { width: previousWidth, height: previousHeight }, { width: newWidth, height: newHeight }, { x, y });
+  }, [rooms, snapToGrid, pixelsPerFoot, logResize]);
+
+  // Handle vertex drag
+  const handleVertexDrag = useCallback((roomId: string, vertexIndex: number, newPos: Point) => {
+    const room = rooms.find(r => r.id === roomId);
+    const previousPos = room?.vertices[vertexIndex] || { x: 0, y: 0 };
+
+    setRooms(rooms.map(r => {
+      if (r.id === roomId) {
+        const newVertices = [...r.vertices];
+        newVertices[vertexIndex] = newPos;
+        const newArea = calculatePolygonArea(newVertices);
+        return { ...r, vertices: newVertices, area: Math.round(newArea) };
+      }
+      return r;
+    }));
+    logVertexMove(roomId, vertexIndex, previousPos, newPos);
+  }, [rooms, calculatePolygonArea, logVertexMove]);
+
+  // Handle vertex remove
+  const handleVertexRemove = useCallback((roomId: string, vertexIndex: number) => {
+    const room = rooms.find(r => r.id === roomId);
+    if (!room || room.vertices.length <= 3) return;
+
+    const newVertices = room.vertices.filter((_, i) => i !== vertexIndex);
+    const newArea = calculatePolygonArea(newVertices);
+
+    setRooms(rooms.map(r =>
+      r.id === roomId ? { ...r, vertices: newVertices, area: Math.round(newArea) } : r
+    ));
+  }, [rooms, calculatePolygonArea]);
+
+  // Handle boundary point drag
+  const handleBoundaryPointDrag = useCallback((index: number, newPos: Point) => {
+    const snapped = { x: snapToGrid(newPos.x), y: snapToGrid(newPos.y) };
+    const constrained = constrainToCanvas(snapped);
+
+    setAduBoundary(prev => {
+      const newBoundary = [...prev];
+      newBoundary[index] = constrained;
+      return newBoundary;
+    });
+  }, [snapToGrid, constrainToCanvas]);
+
+  // Add boundary point
+  const handleAddBoundaryPoint = useCallback((afterIndex: number, point: Point) => {
+    const snapped = { x: snapToGrid(point.x), y: snapToGrid(point.y) };
+    const constrained = constrainToCanvas(snapped);
+
+    setAduBoundary(prev => {
+      const newBoundary = [...prev];
+      newBoundary.splice(afterIndex + 1, 0, constrained);
+      return newBoundary;
+    });
+  }, [snapToGrid, constrainToCanvas]);
+
+  // Remove boundary point (on double-click)
+  const handleRemoveBoundaryPoint = useCallback((index: number) => {
+    setAduBoundary(prev => {
+      if (prev.length <= 3) return prev; // Must have at least 3 points
+      return prev.filter((_, i) => i !== index);
+    });
+    setSelectedBoundaryPointIndex(null);
+  }, []);
+
+  // Delete handlers
+  const handleConfirmDelete = useCallback(() => {
+    if (!deleteDialog.id || !deleteDialog.type) return;
+
+    switch (deleteDialog.type) {
+      case "room":
+        setRooms(rooms.filter(r => r.id !== deleteDialog.id));
+        if (selectedRoomId === deleteDialog.id) setSelectedRoomId(null);
+        logDelete("room", deleteDialog.id, {});
+        break;
+      case "door":
+        setDoors(doors.filter(d => d.id !== deleteDialog.id));
+        if (selectedDoorId === deleteDialog.id) setSelectedDoorId(null);
+        logDelete("door", deleteDialog.id, {});
+        break;
+      case "window":
+        setWindows(windows.filter(w => w.id !== deleteDialog.id));
+        if (selectedWindowId === deleteDialog.id) setSelectedWindowId(null);
+        logDelete("window", deleteDialog.id, {});
+        break;
+      case "furniture":
+        setFurniture(furniture.filter(f => f.id !== deleteDialog.id));
+        if (selectedFurnitureId === deleteDialog.id) setSelectedFurnitureId(null);
+        logDelete("furniture", deleteDialog.id, {});
+        break;
+    }
+    setDeleteDialog({ open: false, type: null, id: null, name: "" });
+  }, [deleteDialog, rooms, doors, windows, furniture, selectedRoomId, selectedDoorId, selectedWindowId, selectedFurnitureId, logDelete]);
+
+  // Rotate handlers
+  const rotateSelectedRoom = useCallback(() => {
+    if (!selectedRoomId) return;
+    setRooms(rooms.map((room) => {
+      if (room.id === selectedRoomId && room.vertices.length === 4) {
+        const centerX = (room.vertices[0].x + room.vertices[2].x) / 2;
+        const centerY = (room.vertices[0].y + room.vertices[2].y) / 2;
+        const width = room.vertices[1].x - room.vertices[0].x;
+        const height = room.vertices[2].y - room.vertices[0].y;
+
+        const newVertices = [
+          { x: centerX - height / 2, y: centerY - width / 2 },
+          { x: centerX + height / 2, y: centerY - width / 2 },
+          { x: centerX + height / 2, y: centerY + width / 2 },
+          { x: centerX - height / 2, y: centerY + width / 2 },
+        ];
+
+        return { ...room, vertices: newVertices };
+      }
+      return room;
+    }));
+  }, [selectedRoomId, rooms]);
+
+  const rotateSelectedDoor = useCallback(() => {
+    if (!selectedDoorId) return;
+    setDoors(doors.map(d =>
+      d.id === selectedDoorId ? { ...d, rotation: (d.rotation + 90) % 360 } : d
+    ));
+  }, [selectedDoorId, doors]);
+
+  const rotateSelectedWindow = useCallback(() => {
+    if (!selectedWindowId) return;
+    setWindows(windows.map(w =>
+      w.id === selectedWindowId ? { ...w, rotation: (w.rotation + 90) % 360 } : w
+    ));
+  }, [selectedWindowId, windows]);
+
+  const rotateSelectedFurniture = useCallback(() => {
+    if (!selectedFurnitureId) return;
+    setFurniture(furniture.map(f =>
+      f.id === selectedFurnitureId ? { ...f, rotation: (f.rotation + 90) % 360 } : f
+    ));
+  }, [selectedFurnitureId, furniture]);
+
+  // ADU size slider handler
+  const handleAduSizeChange = useCallback((sqFt: number) => {
+    const sideLength = Math.sqrt(sqFt) * pixelsPerFoot;
+    const centerX = (aduBoundary[0].x + aduBoundary[2].x) / 2;
+    const centerY = (aduBoundary[0].y + aduBoundary[2].y) / 2;
+    const halfSide = sideLength / 2;
+
+    const newBoundary = [
+      constrainToCanvas({ x: centerX - halfSide, y: centerY - halfSide }),
+      constrainToCanvas({ x: centerX + halfSide, y: centerY - halfSide }),
+      constrainToCanvas({ x: centerX + halfSide, y: centerY + halfSide }),
+      constrainToCanvas({ x: centerX - halfSide, y: centerY + halfSide }),
+    ];
+
+    setAduBoundary(newBoundary);
+  }, [aduBoundary, pixelsPerFoot, constrainToCanvas]);
+
+  // Calculate ADU area
+  const aduArea = calculatePolygonArea(aduBoundary);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+
+      // Undo: Ctrl+Z
+      if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+
+      // Redo: Ctrl+Y or Ctrl+Shift+Z
+      if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      // Delete selected item
+      if (key === 'delete' || key === 'backspace') {
+        e.preventDefault();
+        if (selectedRoomId) {
+          const room = rooms.find(r => r.id === selectedRoomId);
+          if (room) setDeleteDialog({ open: true, type: "room", id: selectedRoomId, name: room.name });
+        } else if (selectedDoorId) {
+          const door = doors.find(d => d.id === selectedDoorId);
+          if (door) setDeleteDialog({ open: true, type: "door", id: selectedDoorId, name: DOOR_CONFIGS[door.type].label });
+        } else if (selectedWindowId) {
+          const win = windows.find(w => w.id === selectedWindowId);
+          if (win) setDeleteDialog({ open: true, type: "window", id: selectedWindowId, name: WINDOW_CONFIGS[win.type].label });
+        } else if (selectedFurnitureId) {
+          const furn = furniture.find(f => f.id === selectedFurnitureId);
+          if (furn) setDeleteDialog({ open: true, type: "furniture", id: selectedFurnitureId, name: FURNITURE_CONFIG[furn.type].name });
+        }
+        return;
+      }
+
+      // Escape: Deselect / Cancel
+      if (key === 'escape') {
+        e.preventDefault();
+        setSelectedRoomId(null);
+        setSelectedDoorId(null);
+        setSelectedWindowId(null);
+        setSelectedFurnitureId(null);
+        setSelectedBoundaryPointIndex(null);
+        if (isDrawing) cancelPolygon();
+        return;
+      }
+
+      // R: Rotate selected
+      if (key === 'r' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        if (selectedDoorId) rotateSelectedDoor();
+        else if (selectedWindowId) rotateSelectedWindow();
+        else if (selectedFurnitureId) rotateSelectedFurniture();
+        return;
+      }
+
+      // G: Toggle grid
+      if (key === 'g' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setShowGrid(!showGrid);
+        return;
+      }
+
+      // Mode shortcuts
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (key === 'v') { e.preventDefault(); setPlacementMode("select"); cancelPolygon(); }
+        if (key === 'b') { e.preventDefault(); setPlacementMode("room"); }
+        if (key === 'd') { e.preventDefault(); setPlacementMode("door"); }
+        if (key === 'w') { e.preventDefault(); setPlacementMode("window"); }
+        if (key === 'f') { e.preventDefault(); setPlacementMode("furniture"); }
+      }
+
+      // Arrow keys: Nudge
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+        e.preventDefault();
+        const nudgeAmount = e.shiftKey ? gridSize : gridSize / 2;
+        const delta = {
+          x: key === 'arrowleft' ? -nudgeAmount : key === 'arrowright' ? nudgeAmount : 0,
+          y: key === 'arrowup' ? -nudgeAmount : key === 'arrowdown' ? nudgeAmount : 0,
+        };
+
+        if (selectedRoomId) {
+          setRooms(rooms.map(r =>
+            r.id === selectedRoomId
+              ? { ...r, vertices: r.vertices.map(v => ({ x: v.x + delta.x, y: v.y + delta.y })) }
+              : r
+          ));
+        } else if (selectedDoorId) {
+          setDoors(doors.map(d =>
+            d.id === selectedDoorId
+              ? { ...d, position: { x: d.position.x + delta.x, y: d.position.y + delta.y } }
+              : d
+          ));
+        } else if (selectedWindowId) {
+          setWindows(windows.map(w =>
+            w.id === selectedWindowId
+              ? { ...w, position: { x: w.position.x + delta.x, y: w.position.y + delta.y } }
+              : w
+          ));
+        } else if (selectedFurnitureId) {
+          setFurniture(furniture.map(f =>
+            f.id === selectedFurnitureId
+              ? { ...f, position: { x: f.position.x + delta.x, y: f.position.y + delta.y } }
+              : f
+          ));
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    undo, redo, rooms, doors, windows, furniture, selectedRoomId, selectedDoorId,
+    selectedWindowId, selectedFurnitureId, isDrawing, cancelPolygon, rotateSelectedDoor,
+    rotateSelectedWindow, rotateSelectedFurniture, showGrid, gridSize
+  ]);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_280px] gap-4">
+      {/* Left Column - Tools/Controls */}
+      <div className="space-y-3 h-fit">
+        {/* Mode Selector */}
+        <ModeSelector
+          placementMode={placementMode}
+          onModeChange={setPlacementMode}
+          onCancelDrawing={cancelPolygon}
+        />
+
+        {/* Room Mode Controls */}
+        {placementMode === "room" && (
+          <RoomSelector
+            selectedRoomType={selectedRoomType}
+            drawMode={drawMode}
+            isDrawing={isDrawing}
+            polygonPointCount={polygonPoints.length}
+            onRoomTypeChange={setSelectedRoomType}
+            onDrawModeChange={(mode) => {
+              setDrawMode(mode);
+              if (mode === "rectangle") cancelPolygon();
+              else resetDrawing();
+            }}
+            onCompletePolygon={completePolygon}
+            onCancelPolygon={cancelPolygon}
+          />
+        )}
+
+        {/* Door Mode Controls */}
+        {placementMode === "door" && (
+          <DoorSelector onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        )}
+
+        {/* Window Mode Controls */}
+        {placementMode === "window" && (
+          <WindowSelector onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        )}
+
+        {/* Furniture Mode Controls */}
+        {placementMode === "furniture" && (
+          <FurnitureSelector
+            snapMode={furnitureSnapMode}
+            onSnapModeChange={setFurnitureSnapMode}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          />
+        )}
+
+        {/* ADU Size Control */}
+        <Card className="p-3 space-y-3 shadow-md">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-semibold">ADU Size</Label>
+            <span className="text-sm font-medium text-primary">{Math.round(aduArea)} sq ft</span>
+          </div>
+          <Slider
+            value={[Math.round(aduArea)]}
+            min={200}
+            max={1200}
+            step={25}
+            onValueChange={([value]) => handleAduSizeChange(value)}
+            className="w-full"
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>200 sq ft</span>
+            <span>1200 sq ft</span>
+          </div>
+          <Button
+            variant={editBoundaryMode ? "default" : "outline"}
+            size="sm"
+            onClick={() => setEditBoundaryMode(!editBoundaryMode)}
+            className="w-full text-xs"
+          >
+            {editBoundaryMode ? "Done Editing Shape" : "Edit ADU Shape"}
+          </Button>
+          {editBoundaryMode && (
+            <p className="text-[10px] text-muted-foreground">
+              Drag points to reshape. Click on edge to add point. Double-click point to remove.
+            </p>
+          )}
+        </Card>
+
+        {/* Undo/Redo and Save */}
+        <Card className="p-3 shadow-md">
+          <div className="flex items-center justify-between">
+            <div className="flex gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={undo}
+                disabled={historyIndex <= 0}
+                className="h-8 w-8 p-0"
+                title="Undo (Ctrl+Z)"
+              >
+                <Undo2 className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={redo}
+                disabled={historyIndex >= history.length - 1}
+                className="h-8 w-8 p-0"
+                title="Redo (Ctrl+Y)"
+              >
+                <Redo2 className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              {isSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              ) : saveError ? (
+                <CloudOff className="h-4 w-4 text-destructive" />
+              ) : lastSavedAt ? (
+                <Cloud className="h-4 w-4 text-green-500" />
+              ) : null}
+              <span className="text-[10px] text-muted-foreground">
+                {historyIndex + 1} / {history.length}
+              </span>
+            </div>
+          </div>
+          {/* Auto-save toggle */}
+          <div className="flex items-center justify-between mt-2 pt-2 border-t">
+            <Label className="text-xs">Auto-save</Label>
+            <Switch
+              checked={autoSaveEnabled}
+              onCheckedChange={setAutoSaveEnabled}
+            />
+          </div>
+          {lastSavedAt && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setRestoreDialog(true)}
+              className="w-full text-xs mt-2 h-7"
+            >
+              <History className="h-3 w-3 mr-1" />
+              Restore from cloud
+            </Button>
+          )}
+        </Card>
+      </div>
+
+      {/* Center Column - Canvas */}
+      <div className="relative">
+        <div
+          ref={canvasContainerRef}
+          className="relative bg-white rounded-lg border shadow-md overflow-hidden"
+          style={{ width: displaySize, height: displaySize }}
+          onDragOver={handleCanvasDragOver}
+          onDrop={handleCanvasDrop}
+        >
+          {/* Floating overlays */}
+          <ADUAreaIndicator config={config} boundary={aduBoundary} />
+          <Compass />
+          <CanvasControls
+            zoom={zoom}
+            showGrid={showGrid}
+            isLocked={isCanvasLocked}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onResetView={resetView}
+            onToggleGrid={setShowGrid}
+            onToggleLock={setIsCanvasLocked}
+          />
+
+          {/* Konva Stage */}
+          <Stage
+            ref={stageRef}
+            width={displaySize}
+            height={displaySize}
+            scaleX={zoom}
+            scaleY={zoom}
+            x={panOffset.x}
+            y={panOffset.y}
+            onMouseDown={(e) => {
+              handlePanStart(e);
+              handleMouseDown(e);
+            }}
+            onMouseMove={(e) => {
+              handlePanMove(e);
+              drawingMouseMove(e);
+            }}
+            onMouseUp={() => {
+              handlePanEnd();
+              drawingMouseUp();
+            }}
+            onWheel={handleWheel}
+          >
+            <Layer>
+              {/* Grid */}
+              <Grid config={config} showGrid={showGrid} />
+
+              {/* ADU Boundary */}
+              <ADUBoundary
+                config={config}
+                boundary={aduBoundary}
+                editMode={editBoundaryMode}
+                selectedPointIndex={selectedBoundaryPointIndex}
+                onPointDrag={handleBoundaryPointDrag}
+                onPointSelect={setSelectedBoundaryPointIndex}
+                onAddPoint={handleAddBoundaryPoint}
+                onRemovePoint={handleRemoveBoundaryPoint}
+              />
+
+              {/* Rooms */}
+              <Rooms
+                config={config}
+                rooms={rooms}
+                doors={doors}
+                selectedRoomId={selectedRoomId}
+                onRoomClick={setSelectedRoomId}
+                onRoomDragEnd={handleRoomDragEnd}
+                onRoomTransform={handleRoomTransform}
+                onVertexDrag={handleVertexDrag}
+                onVertexRemove={handleVertexRemove}
+                transformerRef={transformerRef}
+                roomRefs={roomRefs}
+              />
+
+              {/* Doors */}
+              <Doors
+                config={config}
+                doors={doors}
+                selectedDoorId={selectedDoorId}
+                onDoorClick={setSelectedDoorId}
+                onDoorDragEnd={(id, pos) => {
+                  setDoors(doors.map(d => d.id === id ? { ...d, position: pos } : d));
+                }}
+                onOpeningTransform={(id, newWidth, newPosition) => {
+                  setDoors(doors.map(d => d.id === id ? { ...d, width: newWidth, position: newPosition } : d));
+                }}
+                openingTransformerRef={openingTransformerRef}
+                openingRefs={openingRefs}
+                zoom={zoom}
+              />
+
+              {/* Windows */}
+              <Windows
+                config={config}
+                windows={windows}
+                selectedWindowId={selectedWindowId}
+                onWindowClick={setSelectedWindowId}
+                onWindowDragEnd={(id, pos) => {
+                  setWindows(windows.map(w => w.id === id ? { ...w, position: pos } : w));
+                }}
+                onWindowTransform={(id, width, pos) => {
+                  setWindows(windows.map(w => w.id === id ? { ...w, width, ...(pos && { position: pos }) } : w));
+                }}
+                transformerRef={windowTransformerRef}
+                windowRefs={windowRefs}
+                zoom={zoom}
+              />
+
+              {/* Furniture */}
+              <Furniture
+                config={config}
+                furniture={furniture}
+                furnitureImages={furnitureImages}
+                selectedFurnitureId={selectedFurnitureId}
+                snapMode={furnitureSnapMode}
+                onFurnitureClick={setSelectedFurnitureId}
+                onFurnitureDragEnd={(id, pos) => {
+                  setFurniture(furniture.map(f => f.id === id ? { ...f, position: pos } : f));
+                }}
+              />
+
+              {/* Drawing Preview */}
+              <DrawingPreview
+                config={config}
+                drawMode={drawMode}
+                selectedRoomType={selectedRoomType}
+                isDrawing={isDrawing}
+                currentRect={currentRect}
+                polygonPoints={polygonPoints}
+              />
+            </Layer>
+          </Stage>
+        </div>
+      </div>
+
+      {/* Right Column - Lists */}
+      <div className="space-y-3 h-fit max-h-[800px] overflow-y-auto">
+        {/* Room List */}
+        <RoomList
+          rooms={rooms}
+          selectedRoomId={selectedRoomId}
+          onSelectRoom={setSelectedRoomId}
+          onDeleteRoom={(id, name) => setDeleteDialog({ open: true, type: "room", id, name })}
+          onRotateRoom={rotateSelectedRoom}
+          roomDescriptions={roomDescriptions}
+          onRoomDescriptionChange={(roomId, description) => {
+            const newDescriptions = new Map(roomDescriptions);
+            newDescriptions.set(roomId, description);
+            setRoomDescriptions(newDescriptions);
+          }}
+        />
+
+        {/* Door List */}
+        <DoorList
+          doors={doors}
+          selectedDoorId={selectedDoorId}
+          onSelectDoor={setSelectedDoorId}
+          onDeleteDoor={(id, name) => setDeleteDialog({ open: true, type: "door", id, name })}
+          onRotateDoor={rotateSelectedDoor}
+        />
+
+        {/* Window List */}
+        <WindowList
+          windows={windows}
+          selectedWindowId={selectedWindowId}
+          onSelectWindow={setSelectedWindowId}
+          onDeleteWindow={(id, name) => setDeleteDialog({ open: true, type: "window", id, name })}
+          onRotateWindow={rotateSelectedWindow}
+        />
+
+        {/* Furniture List */}
+        <FurnitureList
+          furniture={furniture}
+          selectedFurnitureId={selectedFurnitureId}
+          onSelectFurniture={setSelectedFurnitureId}
+          onDeleteFurniture={(id, name) => setDeleteDialog({ open: true, type: "furniture", id, name })}
+          onRotateFurniture={rotateSelectedFurniture}
+        />
+      </div>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialog.open} onOpenChange={(open) => !open && setDeleteDialog({ ...deleteDialog, open: false })}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Delete {deleteDialog.type}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete &quot;{deleteDialog.name}&quot;? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Yes, Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Restore Confirmation Dialog */}
+      <AlertDialog open={restoreDialog} onOpenChange={setRestoreDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <History className="h-5 w-5 text-primary" />
+              Restore from Cloud?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This will replace your current work with the last saved version from the cloud.
+              Any unsaved changes will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={restoreFromCloud}>
+              Yes, Restore
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+export default FloorPlanEditor;

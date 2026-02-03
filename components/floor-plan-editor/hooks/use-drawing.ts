@@ -1,10 +1,18 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import type Konva from "konva";
 import type { Room, RoomType, Point } from "@/lib/types";
 import type { CanvasConfig } from "../types";
 import { ROOM_CONFIGS } from "@/lib/constants";
 
 type EntityType = "room" | "door" | "window" | "furniture" | "boundary";
+
+interface AduTransform {
+  offsetX: number;  // ADU offset in feet
+  offsetY: number;
+  rotation: number; // degrees
+  canvasCenter: Point;
+  pixelsPerFoot: number;
+}
 
 interface UseDrawingOptions {
   config: CanvasConfig;
@@ -15,6 +23,7 @@ interface UseDrawingOptions {
   snapToGrid: (value: number) => number;
   onAddRoom: (room: Room) => void;
   logCreate?: (type: EntityType, id: string, data: Record<string, unknown>) => void;
+  aduTransform?: AduTransform; // Optional: when lot is loaded, transforms coordinates to ADU local space
 }
 
 export function useDrawing({
@@ -26,8 +35,61 @@ export function useDrawing({
   snapToGrid,
   onAddRoom,
   logCreate,
+  aduTransform,
 }: UseDrawingOptions) {
   const { pixelsPerFoot } = config;
+
+  /**
+   * Transform world coordinates to ADU-local coordinates.
+   * This accounts for ADU rotation and offset when a lot is loaded.
+   *
+   * The ADU Group transform is:
+   * 1. Translate by (-offsetX, -offsetY) where offset is canvasCenter
+   * 2. Rotate by rotation angle
+   * 3. Translate by (x, y) where x,y = canvasCenter + aduOffset
+   *
+   * To get ADU-local coords, we apply the inverse transform.
+   */
+  const worldToAduLocal = useCallback((worldPoint: Point): Point => {
+    if (!aduTransform || aduTransform.rotation === 0) {
+      // No rotation, just account for offset
+      if (aduTransform) {
+        const offsetPx = {
+          x: aduTransform.offsetX * aduTransform.pixelsPerFoot,
+          y: aduTransform.offsetY * aduTransform.pixelsPerFoot,
+        };
+        return {
+          x: worldPoint.x - offsetPx.x,
+          y: worldPoint.y - offsetPx.y,
+        };
+      }
+      return worldPoint;
+    }
+
+    const { canvasCenter, rotation, offsetX, offsetY, pixelsPerFoot: ppf } = aduTransform;
+    const offsetPx = { x: offsetX * ppf, y: offsetY * ppf };
+
+    // Group position (where the group is translated to)
+    const groupX = canvasCenter.x + offsetPx.x;
+    const groupY = canvasCenter.y + offsetPx.y;
+
+    // Step 1: Translate from world to group origin
+    const tx = worldPoint.x - groupX;
+    const ty = worldPoint.y - groupY;
+
+    // Step 2: Inverse rotate (negative angle)
+    const angleRad = (-rotation * Math.PI) / 180;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+    const rx = tx * cos - ty * sin;
+    const ry = tx * sin + ty * cos;
+
+    // Step 3: Translate back by offsetX/Y (which is canvasCenter in Group)
+    const localX = rx + canvasCenter.x;
+    const localY = ry + canvasCenter.y;
+
+    return { x: localX, y: localY };
+  }, [aduTransform]);
 
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPoint, setStartPoint] = useState<Point | null>(null);
@@ -61,8 +123,10 @@ export function useDrawing({
     const pointerPosition = stage.getPointerPosition();
     if (!pointerPosition) return;
     const world = stageToWorld(pointerPosition);
-    const x = snapToGrid(world.x);
-    const y = snapToGrid(world.y);
+    // Transform to ADU-local coordinates if lot is loaded with rotation
+    const local = worldToAduLocal(world);
+    const x = snapToGrid(local.x);
+    const y = snapToGrid(local.y);
 
     if (drawMode === "rectangle") {
       setIsDrawing(true);
@@ -70,12 +134,45 @@ export function useDrawing({
       setCurrentRect({ x, y, width: 0, height: 0 });
     } else if (drawMode === "polygon") {
       const newPoint = { x, y };
+
+      // Check if clicking near the first point to auto-complete (need at least 3 points)
+      if (polygonPoints.length >= 3) {
+        const firstPoint = polygonPoints[0];
+        const distance = Math.sqrt(
+          Math.pow(x - firstPoint.x, 2) + Math.pow(y - firstPoint.y, 2)
+        );
+        const closeThreshold = config.gridSize; // Within 1 grid unit
+
+        if (distance < closeThreshold) {
+          // Auto-complete the polygon
+          const area = calculatePolygonArea(polygonPoints);
+
+          if (selectedRoomType && area >= 1) {
+            const newRoom: Room = {
+              id: crypto.randomUUID(),
+              type: selectedRoomType,
+              name: `${ROOM_CONFIGS[selectedRoomType].label} ${rooms.filter((r) => r.type === selectedRoomType).length + 1}`,
+              vertices: [...polygonPoints],
+              area: Math.round(area),
+              color: ROOM_CONFIGS[selectedRoomType].color,
+            };
+
+            onAddRoom(newRoom);
+            logCreate?.("room", newRoom.id, { type: newRoom.type, name: newRoom.name, vertices: newRoom.vertices, area: newRoom.area });
+          }
+
+          setIsDrawing(false);
+          setPolygonPoints([]);
+          return;
+        }
+      }
+
       setPolygonPoints(prev => [...prev, newPoint]);
       if (!isDrawing) {
         setIsDrawing(true);
       }
     }
-  }, [selectedRoomType, drawMode, stageToWorld, snapToGrid, isDrawing]);
+  }, [selectedRoomType, drawMode, stageToWorld, worldToAduLocal, snapToGrid, isDrawing, polygonPoints, config.gridSize, calculatePolygonArea, rooms, onAddRoom, logCreate]);
 
   // Handle mouse move for rectangle drawing
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -86,9 +183,11 @@ export function useDrawing({
     const pointerPosition = stage.getPointerPosition();
     if (!pointerPosition) return;
     const world = stageToWorld(pointerPosition);
+    // Transform to ADU-local coordinates if lot is loaded with rotation
+    const local = worldToAduLocal(world);
 
-    const x = snapToGrid(world.x);
-    const y = snapToGrid(world.y);
+    const x = snapToGrid(local.x);
+    const y = snapToGrid(local.y);
 
     let width = x - startPoint.x;
     let height = y - startPoint.y;
@@ -102,7 +201,7 @@ export function useDrawing({
       width: Math.abs(width),
       height: Math.abs(height),
     });
-  }, [isDrawing, selectedRoomType, drawMode, startPoint, stageToWorld, snapToGrid]);
+  }, [isDrawing, selectedRoomType, drawMode, startPoint, stageToWorld, worldToAduLocal, snapToGrid]);
 
   // Handle mouse up for rectangle drawing
   const handleMouseUp = useCallback(() => {

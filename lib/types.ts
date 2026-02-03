@@ -1,5 +1,19 @@
-// Floor Plan Types
-export type RoomType = "bedroom" | "bathroom" | "kitchen" | "living" | "dining" | "corridor" | "other";
+// Floor Plan Types - Aligned with LA ADU and architectural standards
+export type RoomType =
+  | "bedroom"     // Bedroom (min 70 sq ft per CA Building Code)
+  | "bathroom"    // Full Bathroom (shower/tub, toilet, sink)
+  | "half_bath"   // Half Bath/Powder Room (toilet, sink only)
+  | "kitchen"     // Kitchen (required for ADU)
+  | "living"      // Living Room/Great Room
+  | "dining"      // Dining Area
+  | "closet"      // Closet/Wardrobe
+  | "laundry"     // Laundry Room/Area
+  | "storage"     // Storage Room
+  | "utility"     // Utility/Mechanical Room
+  | "entry"       // Entry/Foyer
+  | "corridor"    // Hallway/Corridor
+  | "flex"        // Flex Space/Den/Office
+  | "other";      // Other/Custom
 
 export interface Point {
   x: number;

@@ -22,61 +22,103 @@ export const CANVAS_CONFIG = {
   HEIGHT: 800,
   BACKGROUND_COLOR: "#ffffff",
   WALL_THICKNESS: 6, // inches (typical interior wall)
-  MIN_SCALE: 0.25, // Allow zooming out more
+  MIN_SCALE: 0.1, // Allow zooming out to see large lots (10%)
   MAX_SCALE: 3,
 } as const;
 
-// Room Type Configurations
+// Room Type Configurations - Aligned with LA ADU and architectural standards
 export const ROOM_CONFIGS: Record<
   RoomType,
   {
     label: string;
     color: string;
-    minSize: number; // square feet
+    minSize: number; // square feet (per CA Building Code / LA ADU standards)
     icon: string;
   }
 > = {
   bedroom: {
     label: "Bedroom",
     color: "#dbeafe", // light blue
-    minSize: 70,
+    minSize: 70, // CA Building Code minimum for habitable room
     icon: "🛏️",
   },
   bathroom: {
-    label: "Bathroom",
+    label: "Full Bath",
     color: "#fce7f3", // light pink
-    minSize: 35,
+    minSize: 35, // Minimum for tub/shower, toilet, sink
     icon: "🚿",
+  },
+  half_bath: {
+    label: "Half Bath",
+    color: "#fbcfe8", // pink
+    minSize: 18, // Minimum for toilet and sink only
+    icon: "🚽",
   },
   kitchen: {
     label: "Kitchen",
     color: "#fef3c7", // light yellow
-    minSize: 50,
+    minSize: 50, // Required for ADU
     icon: "🍳",
   },
   living: {
     label: "Living Room",
     color: "#dcfce7", // light green
-    minSize: 100,
+    minSize: 120, // Recommended minimum for living space
     icon: "🛋️",
   },
   dining: {
-    label: "Dining Room",
+    label: "Dining Area",
     color: "#fef9c3", // light amber
-    minSize: 80,
+    minSize: 64, // Minimum for 4-person dining
     icon: "🍽️",
   },
-  corridor: {
-    label: "Corridor/Hallway",
-    color: "#e0e7ff", // light indigo
-    minSize: 20,
+  closet: {
+    label: "Closet",
+    color: "#e9d5ff", // light purple
+    minSize: 6, // Walk-in starts at ~24 sq ft
+    icon: "👔",
+  },
+  laundry: {
+    label: "Laundry",
+    color: "#a5f3fc", // light cyan
+    minSize: 15, // Stacked washer/dryer minimum
+    icon: "🧺",
+  },
+  storage: {
+    label: "Storage",
+    color: "#fed7aa", // light orange
+    minSize: 10, // Utility storage
+    icon: "📦",
+  },
+  utility: {
+    label: "Utility Room",
+    color: "#d1d5db", // gray
+    minSize: 12, // Water heater, HVAC
+    icon: "⚙️",
+  },
+  entry: {
+    label: "Entry/Foyer",
+    color: "#bfdbfe", // soft blue
+    minSize: 16, // Small entry area
     icon: "🚪",
+  },
+  corridor: {
+    label: "Hallway",
+    color: "#e0e7ff", // light indigo
+    minSize: 12, // 3ft wide minimum per code
+    icon: "↔️",
+  },
+  flex: {
+    label: "Flex Space",
+    color: "#d9f99d", // lime
+    minSize: 70, // Multi-purpose room
+    icon: "📐",
   },
   other: {
     label: "Other",
     color: "#f3f4f6", // light gray
-    minSize: 40,
-    icon: "📦",
+    minSize: 20,
+    icon: "✏️",
   },
 } as const;
 
@@ -210,42 +252,77 @@ export const VALIDATION_MESSAGES = {
   INVALID_SHAPE: "Room shape is invalid. Please draw a closed polygon.",
 } as const;
 
-// Room Size Recommendations (for guidance)
+// Room Size Recommendations (for guidance) - LA ADU standards
 export const ROOM_SIZE_HINTS: Record<RoomType, { min: number; recommended: number; description: string }> = {
   bedroom: {
     min: 70,
     recommended: 120,
-    description: "A queen bed needs about 120 sq ft",
+    description: "CA code: 70 sq ft min. Queen bed needs ~120 sq ft",
   },
   bathroom: {
     min: 35,
     recommended: 50,
-    description: "Comfortable for shower, toilet, and sink",
+    description: "Full bath with tub/shower, toilet, and sink",
+  },
+  half_bath: {
+    min: 18,
+    recommended: 25,
+    description: "Powder room with toilet and sink only",
   },
   kitchen: {
     min: 50,
     recommended: 80,
-    description: "Enough space for stove, fridge, and counter",
+    description: "ADU requirement: stove, fridge, sink, counter",
   },
   living: {
-    min: 100,
-    recommended: 150,
-    description: "Fits a sofa, TV, and coffee table",
+    min: 120,
+    recommended: 180,
+    description: "Main living area: sofa, seating, entertainment",
   },
   dining: {
-    min: 80,
+    min: 64,
     recommended: 100,
-    description: "Table for 4-6 people",
+    description: "Dining for 4-6 people, often combined with living",
+  },
+  closet: {
+    min: 6,
+    recommended: 24,
+    description: "Reach-in: 6 sq ft, walk-in: 24+ sq ft",
+  },
+  laundry: {
+    min: 15,
+    recommended: 35,
+    description: "Stacked: 15 sq ft, side-by-side: 35 sq ft",
+  },
+  storage: {
+    min: 10,
+    recommended: 30,
+    description: "General storage, pantry, or mechanical chase",
+  },
+  utility: {
+    min: 12,
+    recommended: 24,
+    description: "Water heater, HVAC, electrical panel",
+  },
+  entry: {
+    min: 16,
+    recommended: 36,
+    description: "Foyer/entry area, coat storage",
   },
   corridor: {
-    min: 20,
-    recommended: 30,
-    description: "3 feet wide minimum for hallways",
+    min: 12,
+    recommended: 20,
+    description: "Code: 36\" min width, 44\" for egress",
+  },
+  flex: {
+    min: 70,
+    recommended: 100,
+    description: "Home office, den, or convertible space",
   },
   other: {
-    min: 40,
-    recommended: 60,
-    description: "Storage, utility, or flex space",
+    min: 20,
+    recommended: 40,
+    description: "Custom room - specify in description",
   },
 } as const;
 

@@ -4,10 +4,16 @@ import React from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { Square, Pentagon, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ROOM_CONFIGS } from "@/lib/constants";
+import { ROOM_CONFIGS, ROOM_SIZE_HINTS } from "@/lib/constants";
 import type { RoomType } from "@/lib/types";
+
+const DRAW_MODE_TOOLTIPS = {
+  rectangle: "Click and drag on the canvas to draw a simple rectangular room. Best for standard rooms.",
+  polygon: "Click to place vertices and create complex room shapes with any number of sides. Click 'Complete' when finished.",
+};
 
 interface RoomSelectorProps {
   selectedRoomType: RoomType | null;
@@ -33,58 +39,86 @@ export function RoomSelector({
   const roomTypes = Object.keys(ROOM_CONFIGS) as RoomType[];
 
   return (
-    <>
+    <TooltipProvider>
       {/* Draw Mode Selector */}
       <Card className="p-3 space-y-3 shadow-md transition-shadow hover:shadow-lg">
         <div className="space-y-3">
           <Label className="text-sm font-semibold text-foreground">Room Shape:</Label>
           <div className="flex flex-col gap-2">
-            <Button
-              variant={drawMode === "rectangle" ? "default" : "outline"}
-              onClick={() => onDrawModeChange("rectangle")}
-              className={cn(
-                "text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2",
-                drawMode !== "rectangle" && "hover:text-foreground"
-              )}
-            >
-              <Square className="h-4 w-4 mr-1.5 flex-shrink-0" />
-              <span className="truncate">Simple Rectangle</span>
-              <span className="ml-auto text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded flex-shrink-0">Easy</span>
-            </Button>
-            <Button
-              variant={drawMode === "polygon" ? "default" : "outline"}
-              onClick={() => onDrawModeChange("polygon")}
-              className={cn(
-                "text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2",
-                drawMode !== "polygon" && "hover:text-foreground"
-              )}
-            >
-              <Pentagon className="h-4 w-4 mr-1.5 flex-shrink-0" />
-              <span className="truncate">Custom Shape</span>
-              <span className="ml-auto text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded flex-shrink-0">Advanced</span>
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={drawMode === "rectangle" ? "default" : "outline"}
+                  onClick={() => onDrawModeChange("rectangle")}
+                  className={cn(
+                    "text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2",
+                    drawMode !== "rectangle" && "hover:text-foreground"
+                  )}
+                >
+                  <Square className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Simple Rectangle</span>
+                  <span className="ml-auto text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded flex-shrink-0">Easy</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                {DRAW_MODE_TOOLTIPS.rectangle}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={drawMode === "polygon" ? "default" : "outline"}
+                  onClick={() => onDrawModeChange("polygon")}
+                  className={cn(
+                    "text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2",
+                    drawMode !== "polygon" && "hover:text-foreground"
+                  )}
+                >
+                  <Pentagon className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Custom Shape</span>
+                  <span className="ml-auto text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded flex-shrink-0">Advanced</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                {DRAW_MODE_TOOLTIPS.polygon}
+              </TooltipContent>
+            </Tooltip>
           </div>
 
           {/* Polygon completion controls */}
           {drawMode === "polygon" && isDrawing && (
             <div className="flex flex-col gap-2 pt-2 border-t">
-              <Button
-                variant="default"
-                onClick={onCompletePolygon}
-                disabled={polygonPointCount < 3}
-                className="text-xs w-full h-auto py-2"
-              >
-                <Check className="h-4 w-4 mr-1.5" />
-                Complete ({polygonPointCount} points)
-              </Button>
-              <Button
-                variant="outline"
-                onClick={onCancelPolygon}
-                className="text-xs w-full h-auto py-2 hover:text-foreground"
-              >
-                <X className="h-4 w-4 mr-1.5" />
-                Cancel
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="default"
+                    onClick={onCompletePolygon}
+                    disabled={polygonPointCount < 3}
+                    className="text-xs w-full h-auto py-2"
+                  >
+                    <Check className="h-4 w-4 mr-1.5" />
+                    Complete ({polygonPointCount} points)
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  Finish drawing and create the room (minimum 3 points required)
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    onClick={onCancelPolygon}
+                    className="text-xs w-full h-auto py-2 hover:text-foreground"
+                  >
+                    <X className="h-4 w-4 mr-1.5" />
+                    Cancel
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  Discard the current polygon and start over
+                </TooltipContent>
+              </Tooltip>
             </div>
           )}
 
@@ -105,26 +139,37 @@ export function RoomSelector({
         <div className="grid grid-cols-2 gap-2">
           {roomTypes.map((type) => {
             const config = ROOM_CONFIGS[type];
+            const hint = ROOM_SIZE_HINTS[type];
             return (
-              <Button
-                key={type}
-                variant={selectedRoomType === type ? "default" : "outline"}
-                onClick={() => onRoomTypeChange(type)}
-                className={cn(
-                  "text-xs h-auto py-2 px-2 justify-start transition-all hover:scale-[1.02]",
-                  selectedRoomType !== type && "hover:text-foreground"
-                )}
-              >
-                <div
-                  className="w-3 h-3 rounded-sm mr-1.5 flex-shrink-0"
-                  style={{ backgroundColor: config.color }}
-                />
-                <span className="truncate">{config.label}</span>
-              </Button>
+              <Tooltip key={type}>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={selectedRoomType === type ? "default" : "outline"}
+                    onClick={() => onRoomTypeChange(type)}
+                    className={cn(
+                      "text-xs h-auto py-2 px-2 justify-start transition-all hover:scale-[1.02]",
+                      selectedRoomType !== type && "hover:text-foreground"
+                    )}
+                  >
+                    <div
+                      className="w-3 h-3 rounded-sm mr-1.5 flex-shrink-0"
+                      style={{ backgroundColor: config.color }}
+                    />
+                    <span className="truncate">{config.label}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  <div className="max-w-[200px]">
+                    <p className="font-medium">{config.label}</p>
+                    <p className="text-muted-foreground">{hint.description}</p>
+                    <p className="text-muted-foreground mt-1">Min: {config.minSize} sq ft | Rec: {hint.recommended} sq ft</p>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
             );
           })}
         </div>
       </Card>
-    </>
+    </TooltipProvider>
   );
 }

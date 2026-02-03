@@ -112,7 +112,7 @@ export interface Vertex {
 
 export interface RoomData {
   name: string
-  type: "bedroom" | "bathroom" | "kitchen" | "living" | "dining" | "corridor" | "other"
+  type: "bedroom" | "bathroom" | "half_bath" | "kitchen" | "living" | "dining" | "closet" | "laundry" | "storage" | "utility" | "entry" | "corridor" | "flex" | "other"
   description?: string
   color?: string
   vertices: Vertex[]
@@ -447,4 +447,561 @@ export async function listProjectSessions(
   closedAt?: string
 }>>> {
   return fetchApi(`/actions/sessions/project/${projectId}`)
+}
+
+// ============ Individual Room CRUD API ============
+
+export interface Room {
+  id: string
+  blueprintId: string
+  name: string
+  type: "bedroom" | "bathroom" | "half_bath" | "kitchen" | "living" | "dining" | "closet" | "laundry" | "storage" | "utility" | "entry" | "corridor" | "flex" | "other"
+  description?: string
+  color?: string
+  vertices: Vertex[]
+  areaSqFt: number
+  widthFeet?: number
+  heightFeet?: number
+  rotation: number
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export async function createRoom(
+  blueprintId: string,
+  data: Omit<RoomData, "id">
+): Promise<ApiResponse<{ room: Room }>> {
+  return fetchApi(`/blueprints/${blueprintId}/rooms`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function listRooms(
+  blueprintId: string
+): Promise<ApiResponse<{ rooms: Room[]; count: number }>> {
+  return fetchApi(`/blueprints/${blueprintId}/rooms`)
+}
+
+export async function getRoom(
+  roomId: string
+): Promise<ApiResponse<{ room: Room }>> {
+  return fetchApi(`/blueprints/rooms/${roomId}`)
+}
+
+export async function updateRoom(
+  roomId: string,
+  data: Partial<RoomData>
+): Promise<ApiResponse<{ room: Room }>> {
+  return fetchApi(`/blueprints/rooms/${roomId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteRoom(
+  roomId: string
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/blueprints/rooms/${roomId}`, {
+    method: "DELETE",
+  })
+}
+
+// ============ Individual Door CRUD API ============
+
+export interface Door {
+  id: string
+  blueprintId: string
+  type: "single" | "double" | "sliding" | "french" | "opening"
+  x: number
+  y: number
+  widthFeet: number
+  heightFeet?: number
+  rotation: number
+  isExterior: boolean
+  connectsRoomId1?: string
+  connectsRoomId2?: string
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export async function createDoor(
+  blueprintId: string,
+  data: Omit<DoorData, "id">
+): Promise<ApiResponse<{ door: Door }>> {
+  return fetchApi(`/blueprints/${blueprintId}/doors`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function listDoors(
+  blueprintId: string
+): Promise<ApiResponse<{ doors: Door[]; count: number }>> {
+  return fetchApi(`/blueprints/${blueprintId}/doors`)
+}
+
+export async function getDoor(
+  doorId: string
+): Promise<ApiResponse<{ door: Door }>> {
+  return fetchApi(`/blueprints/doors/${doorId}`)
+}
+
+export async function updateDoor(
+  doorId: string,
+  data: Partial<DoorData>
+): Promise<ApiResponse<{ door: Door }>> {
+  return fetchApi(`/blueprints/doors/${doorId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteDoor(
+  doorId: string
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/blueprints/doors/${doorId}`, {
+    method: "DELETE",
+  })
+}
+
+// ============ Individual Window CRUD API ============
+
+export interface Window {
+  id: string
+  blueprintId: string
+  type: "standard" | "bay" | "picture" | "sliding"
+  x: number
+  y: number
+  widthFeet: number
+  heightFeet: number
+  sillHeightFeet?: number
+  rotation: number
+  roomId?: string
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export async function createWindow(
+  blueprintId: string,
+  data: Omit<WindowData, "id">
+): Promise<ApiResponse<{ window: Window }>> {
+  return fetchApi(`/blueprints/${blueprintId}/windows`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function listWindows(
+  blueprintId: string
+): Promise<ApiResponse<{ windows: Window[]; count: number }>> {
+  return fetchApi(`/blueprints/${blueprintId}/windows`)
+}
+
+export async function getWindow(
+  windowId: string
+): Promise<ApiResponse<{ window: Window }>> {
+  return fetchApi(`/blueprints/windows/${windowId}`)
+}
+
+export async function updateWindow(
+  windowId: string,
+  data: Partial<WindowData>
+): Promise<ApiResponse<{ window: Window }>> {
+  return fetchApi(`/blueprints/windows/${windowId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteWindow(
+  windowId: string
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/blueprints/windows/${windowId}`, {
+    method: "DELETE",
+  })
+}
+
+// ============ Individual Furniture CRUD API ============
+
+export interface Furniture {
+  id: string
+  blueprintId: string
+  type: string
+  category: "bedroom" | "bathroom" | "kitchen" | "living" | "office"
+  name?: string
+  x: number
+  y: number
+  widthFeet: number
+  heightFeet: number
+  actualHeightFeet?: number
+  rotation: number
+  roomId?: string
+  zIndex: number
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export async function createFurniture(
+  blueprintId: string,
+  data: Omit<FurnitureData, "id">
+): Promise<ApiResponse<{ furniture: Furniture }>> {
+  return fetchApi(`/blueprints/${blueprintId}/furniture`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function bulkCreateFurniture(
+  blueprintId: string,
+  items: Omit<FurnitureData, "id">[]
+): Promise<ApiResponse<{ furniture: Furniture[]; count: number }>> {
+  return fetchApi(`/blueprints/${blueprintId}/furniture/bulk`, {
+    method: "POST",
+    body: JSON.stringify({ items }),
+  })
+}
+
+export async function listFurniture(
+  blueprintId: string,
+  category?: string
+): Promise<ApiResponse<{ furniture: Furniture[]; count: number }>> {
+  const query = category ? `?category=${category}` : ""
+  return fetchApi(`/blueprints/${blueprintId}/furniture${query}`)
+}
+
+export async function getFurniture(
+  furnitureId: string
+): Promise<ApiResponse<{ furniture: Furniture }>> {
+  return fetchApi(`/blueprints/furniture/${furnitureId}`)
+}
+
+export async function updateFurniture(
+  furnitureId: string,
+  data: Partial<FurnitureData>
+): Promise<ApiResponse<{ furniture: Furniture }>> {
+  return fetchApi(`/blueprints/furniture/${furnitureId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteFurniture(
+  furnitureId: string
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/blueprints/furniture/${furnitureId}`, {
+    method: "DELETE",
+  })
+}
+
+// ============ ADU Boundary API ============
+
+export interface ADUBoundary {
+  blueprintId: string
+  aduBoundary: Vertex[]
+  aduAreaSqFt: number
+  pixelsPerFoot?: number
+  canvasWidth?: number
+  canvasHeight?: number
+}
+
+export async function getADUBoundary(
+  blueprintId: string
+): Promise<ApiResponse<ADUBoundary>> {
+  return fetchApi(`/blueprints/${blueprintId}/adu-boundary`)
+}
+
+export async function updateADUBoundary(
+  blueprintId: string,
+  data: { aduBoundary: Vertex[]; aduAreaSqFt?: number }
+): Promise<ApiResponse<ADUBoundary>> {
+  return fetchApi(`/blueprints/${blueprintId}/adu-boundary`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function resetADUBoundary(
+  blueprintId: string
+): Promise<ApiResponse<ADUBoundary>> {
+  return fetchApi(`/blueprints/${blueprintId}/adu-boundary/reset`, {
+    method: "POST",
+  })
+}
+
+export async function validateADUBoundary(
+  blueprintId: string
+): Promise<ApiResponse<{
+  blueprintId: string
+  isValid: boolean
+  validationErrors: string[]
+  aduAreaSqFt: number
+}>> {
+  return fetchApi(`/blueprints/${blueprintId}/adu-boundary/validate`, {
+    method: "POST",
+  })
+}
+
+// ============ Snapshots / Version History API ============
+
+// Editor view settings saved with snapshots
+export interface SnapshotEditorSettings {
+  showLotOverlay: boolean
+  showSatelliteView: boolean
+  showLotBoundary: boolean
+  showGrid: boolean
+  zoom: number
+  panOffsetX: number
+  panOffsetY: number
+}
+
+// Lot data saved with snapshots
+export interface SnapshotLotData {
+  parcelNumber?: string
+  address?: string
+  city?: string
+  state?: string
+  zipCode?: string
+  geoLat: number
+  geoLng: number
+  geoRotation: number
+  boundaryVertices?: GeoVertex[]
+  lotWidthFeet?: number
+  lotDepthFeet?: number
+  lotAreaSqFt?: number
+  aduOffsetX: number
+  aduOffsetY: number
+  aduRotation: number
+  setbackFrontFeet: number
+  setbackBackFeet: number
+  setbackLeftFeet: number
+  setbackRightFeet: number
+  dataSource?: string
+}
+
+export interface SnapshotData {
+  rooms: RoomData[]
+  doors: DoorData[]
+  windows: WindowData[]
+  furniture: FurnitureData[]
+  aduBoundary: Vertex[]
+  // Optional fields for backward compatibility with old snapshots
+  editorSettings?: SnapshotEditorSettings
+  lotData?: SnapshotLotData
+}
+
+export interface Snapshot {
+  id: string
+  projectId: string
+  blueprintId?: string
+  type: "auto" | "manual"
+  label?: string
+  data: SnapshotData
+  roomCount?: string
+  doorCount?: string
+  windowCount?: string
+  furnitureCount?: string
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export async function createSnapshot(data: {
+  projectId: string
+  blueprintId?: string
+  type: "auto" | "manual"
+  label?: string
+  data: SnapshotData
+}): Promise<ApiResponse<{ snapshot: Snapshot }>> {
+  return fetchApi("/snapshots", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+export async function listSnapshots(
+  projectId: string,
+  type?: "auto" | "manual"
+): Promise<ApiResponse<{
+  autoSaves: Snapshot[]
+  manualSaves: Snapshot[]
+  totalCount: number
+}>> {
+  const query = type ? `?type=${type}` : ""
+  return fetchApi(`/snapshots/project/${projectId}${query}`)
+}
+
+export async function getSnapshot(
+  snapshotId: string
+): Promise<ApiResponse<{ snapshot: Snapshot }>> {
+  return fetchApi(`/snapshots/${snapshotId}`)
+}
+
+export async function deleteSnapshot(
+  snapshotId: string
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/snapshots/${snapshotId}`, {
+    method: "DELETE",
+  })
+}
+
+// ============ Lots API ============
+
+export interface GeoVertex {
+  lat: number
+  lng: number
+}
+
+export interface LotData {
+  blueprintId: string
+  parcelNumber?: string
+  address?: string
+  city?: string
+  state?: string
+  zipCode?: string
+  geoLat: number
+  geoLng: number
+  geoRotation?: number
+  boundaryVertices?: GeoVertex[]
+  lotWidthFeet?: number
+  lotDepthFeet?: number
+  lotAreaSqFt?: number
+  aduOffsetX?: number
+  aduOffsetY?: number
+  aduRotation?: number
+  setbackFrontFeet?: number
+  setbackBackFeet?: number
+  setbackLeftFeet?: number
+  setbackRightFeet?: number
+  dataSource?: "orange_county_gis" | "manual" | "nominatim"
+}
+
+export interface Lot {
+  id: string
+  blueprintId: string
+  parcelNumber?: string
+  address?: string
+  city?: string
+  state?: string
+  zipCode?: string
+  geoLat: number
+  geoLng: number
+  geoRotation: number
+  boundaryVertices?: GeoVertex[]
+  lotWidthFeet?: number
+  lotDepthFeet?: number
+  lotAreaSqFt?: number
+  aduOffsetX: number
+  aduOffsetY: number
+  aduRotation: number
+  setbackFrontFeet: number
+  setbackBackFeet: number
+  setbackLeftFeet: number
+  setbackRightFeet: number
+  dataSource?: string
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AddressResult {
+  placeId: string
+  displayName: string
+  lat: number
+  lng: number
+  boundingBox?: number[]
+  addressComponents?: {
+    houseNumber?: string
+    road?: string
+    city?: string
+    state?: string
+    postcode?: string
+    country?: string
+  }
+}
+
+export interface ParcelData {
+  parcelNumber: string
+  situsAddress?: string
+  ownerName?: string
+  boundaryVertices: GeoVertex[]
+  areaSqFt?: number
+  bounds?: {
+    north: number
+    south: number
+    east: number
+    west: number
+  }
+}
+
+/**
+ * Search for addresses using Nominatim geocoding
+ */
+export async function searchAddress(
+  query: string,
+  limit: number = 5
+): Promise<ApiResponse<{ results: AddressResult[] }>> {
+  return fetchApi("/lots/search-address", {
+    method: "POST",
+    body: JSON.stringify({ query, limit }),
+  })
+}
+
+/**
+ * Get parcel data from Orange County GIS for a lat/lng point
+ */
+export async function getParcelData(
+  lat: number,
+  lng: number
+): Promise<ApiResponse<{ parcel: ParcelData }>> {
+  return fetchApi(`/lots/parcel?lat=${lat}&lng=${lng}`)
+}
+
+/**
+ * Create a lot for a blueprint
+ */
+export async function createLot(
+  data: LotData
+): Promise<ApiResponse<{ lot: Lot }>> {
+  return fetchApi("/lots", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Get lot for a blueprint
+ */
+export async function getLot(
+  blueprintId: string
+): Promise<ApiResponse<{ lot: Lot | null }>> {
+  return fetchApi(`/lots/blueprint/${blueprintId}`)
+}
+
+/**
+ * Update a lot
+ */
+export async function updateLot(
+  lotId: string,
+  data: Partial<Omit<LotData, "blueprintId">>
+): Promise<ApiResponse<{ lot: Lot }>> {
+  return fetchApi(`/lots/${lotId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Delete a lot
+ */
+export async function deleteLot(
+  lotId: string
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/lots/${lotId}`, {
+    method: "DELETE",
+  })
 }

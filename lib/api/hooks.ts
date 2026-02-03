@@ -9,6 +9,10 @@ import type {
   SaveBlueprintResponse,
   GenerateVisualizationData,
   GenerateVisualizationResponse,
+  Lot,
+  LotData,
+  AddressResult,
+  ParcelData,
 } from "./client"
 
 /**
@@ -174,5 +178,334 @@ export function useVisualization() {
     loading,
     error,
     generateVisualization,
+  }
+}
+
+/**
+ * Hook for managing lot data and parcel lookup
+ */
+export function useLot(blueprintId?: string) {
+  const [lot, setLot] = useState<Lot | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [addressResults, setAddressResults] = useState<AddressResult[]>([])
+  const [parcelData, setParcelData] = useState<ParcelData | null>(null)
+
+  /**
+   * Search for addresses using Nominatim geocoding
+   */
+  const searchAddresses = useCallback(async (query: string) => {
+    if (query.length < 3) {
+      setAddressResults([])
+      return []
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.searchAddress(query)
+      setAddressResults(response.data.results)
+      return response.data.results
+    } catch (e) {
+      setError((e as Error).message)
+      return []
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  /**
+   * Get parcel data from Orange County GIS
+   */
+  const fetchParcelData = useCallback(async (lat: number, lng: number) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.getParcelData(lat, lng)
+      setParcelData(response.data.parcel)
+      return response.data.parcel
+    } catch (e) {
+      setError((e as Error).message)
+      setParcelData(null)
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  /**
+   * Load lot for current blueprint
+   */
+  const loadLot = useCallback(async (bpId?: string) => {
+    const id = bpId || blueprintId
+    if (!id) {
+      setError("No blueprint ID provided")
+      return null
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.getLot(id)
+      setLot(response.data.lot)
+      return response.data.lot
+    } catch (e) {
+      setError((e as Error).message)
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [blueprintId])
+
+  /**
+   * Create or save lot for blueprint
+   */
+  const saveLot = useCallback(async (data: Omit<LotData, "blueprintId">) => {
+    if (!blueprintId) {
+      setError("No blueprint ID provided")
+      throw new Error("No blueprint ID provided")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      if (lot) {
+        // Update existing lot
+        const response = await api.updateLot(lot.id, data)
+        setLot(response.data.lot)
+        return response.data.lot
+      } else {
+        // Create new lot
+        const response = await api.createLot({ ...data, blueprintId })
+        setLot(response.data.lot)
+        return response.data.lot
+      }
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [blueprintId, lot])
+
+  /**
+   * Update ADU position on lot (optimistic update for immediate UI feedback)
+   */
+  const updateAduPosition = useCallback(async (
+    offsetX: number,
+    offsetY: number,
+    rotation?: number
+  ) => {
+    if (!lot) {
+      setError("No lot loaded")
+      throw new Error("No lot loaded")
+    }
+
+    // Optimistically update local state immediately for smooth UI
+    setLot(prev => prev ? {
+      ...prev,
+      aduOffsetX: offsetX,
+      aduOffsetY: offsetY,
+      ...(rotation !== undefined && { aduRotation: rotation }),
+    } : null)
+
+    // Don't set loading - let the UI update immediately
+    setError(null)
+    try {
+      const response = await api.updateLot(lot.id, {
+        aduOffsetX: offsetX,
+        aduOffsetY: offsetY,
+        ...(rotation !== undefined && { aduRotation: rotation }),
+      })
+      // Sync with server response (in case of any corrections)
+      setLot(response.data.lot)
+      return response.data.lot
+    } catch (e) {
+      // Revert on error
+      setLot(lot)
+      setError((e as Error).message)
+      throw e
+    }
+  }, [lot])
+
+  /**
+   * Update setbacks
+   */
+  const updateSetbacks = useCallback(async (setbacks: {
+    front?: number
+    back?: number
+    left?: number
+    right?: number
+  }) => {
+    if (!lot) {
+      setError("No lot loaded")
+      throw new Error("No lot loaded")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.updateLot(lot.id, {
+        ...(setbacks.front !== undefined && { setbackFrontFeet: setbacks.front }),
+        ...(setbacks.back !== undefined && { setbackBackFeet: setbacks.back }),
+        ...(setbacks.left !== undefined && { setbackLeftFeet: setbacks.left }),
+        ...(setbacks.right !== undefined && { setbackRightFeet: setbacks.right }),
+      })
+      setLot(response.data.lot)
+      return response.data.lot
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [lot])
+
+  /**
+   * Update lot dimensions (simple width/depth, clears custom boundary)
+   */
+  const updateLotDimensions = useCallback(async (width: number, depth: number) => {
+    if (!lot) {
+      setError("No lot loaded")
+      throw new Error("No lot loaded")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.updateLot(lot.id, {
+        lotWidthFeet: width,
+        lotDepthFeet: depth,
+        lotAreaSqFt: width * depth,
+        // Clear boundary vertices when manually setting dimensions
+        boundaryVertices: undefined,
+      })
+      setLot(response.data.lot)
+      return response.data.lot
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [lot])
+
+  /**
+   * Update lot with custom drawn boundary (polygon vertices in feet relative to canvas center)
+   * Converts feet coordinates to geo coordinates and saves both vertices and dimensions
+   */
+  const updateLotCustomBoundary = useCallback(async (boundaryFeet: Array<{ x: number; y: number }>) => {
+    if (!lot) {
+      setError("No lot loaded")
+      throw new Error("No lot loaded")
+    }
+    if (boundaryFeet.length < 3) {
+      setError("Boundary must have at least 3 vertices")
+      throw new Error("Boundary must have at least 3 vertices")
+    }
+
+    // Calculate dimensions from boundary
+    const xCoords = boundaryFeet.map(p => p.x)
+    const yCoords = boundaryFeet.map(p => p.y)
+    const minX = Math.min(...xCoords)
+    const maxX = Math.max(...xCoords)
+    const minY = Math.min(...yCoords)
+    const maxY = Math.max(...yCoords)
+    const width = Math.abs(maxX - minX)
+    const depth = Math.abs(maxY - minY)
+
+    // Calculate polygon area using shoelace formula
+    let area = 0
+    for (let i = 0; i < boundaryFeet.length; i++) {
+      const j = (i + 1) % boundaryFeet.length
+      area += boundaryFeet[i].x * boundaryFeet[j].y
+      area -= boundaryFeet[j].x * boundaryFeet[i].y
+    }
+    area = Math.abs(area) / 2
+
+    // Convert feet to geo coordinates
+    // Feet-per-degree conversions
+    const feetPerDegreeLat = 364000
+    const feetPerDegreeLng = 364000 * Math.cos((lot.geoLat * Math.PI) / 180)
+
+    // Convert feet (relative to canvas center) to geo (lat/lng)
+    // Note: canvas Y increases downward, but latitude increases northward
+    const boundaryVertices: Array<{ lat: number; lng: number }> = boundaryFeet.map(p => ({
+      lat: lot.geoLat - (p.y / feetPerDegreeLat),  // Negate Y because canvas Y is inverted
+      lng: lot.geoLng + (p.x / feetPerDegreeLng),
+    }))
+
+    // Optimistic update for immediate UI feedback
+    setLot(prev => prev ? {
+      ...prev,
+      boundaryVertices,
+      lotWidthFeet: width,
+      lotDepthFeet: depth,
+      lotAreaSqFt: area,
+      dataSource: "manual",
+    } : null)
+
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.updateLot(lot.id, {
+        boundaryVertices,
+        lotWidthFeet: width,
+        lotDepthFeet: depth,
+        lotAreaSqFt: area,
+        dataSource: "manual",
+      })
+      setLot(response.data.lot)
+      return response.data.lot
+    } catch (e) {
+      // Revert on error
+      setLot(lot)
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [lot])
+
+  /**
+   * Delete lot
+   */
+  const removeLot = useCallback(async () => {
+    if (!lot) {
+      setError("No lot loaded")
+      throw new Error("No lot loaded")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      await api.deleteLot(lot.id)
+      setLot(null)
+      setParcelData(null)
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [lot])
+
+  /**
+   * Clear address search results
+   */
+  const clearAddressResults = useCallback(() => {
+    setAddressResults([])
+  }, [])
+
+  return {
+    lot,
+    loading,
+    error,
+    addressResults,
+    parcelData,
+    searchAddresses,
+    fetchParcelData,
+    loadLot,
+    saveLot,
+    updateAduPosition,
+    updateSetbacks,
+    updateLotDimensions,
+    updateLotCustomBoundary,
+    removeLot,
+    clearAddressResults,
   }
 }

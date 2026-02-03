@@ -1,7 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useRef } from "react";
 import { Rect, Group, Image as KonvaImage } from "react-konva";
+import type Konva from "konva";
 import type { Point } from "@/lib/types";
 import type { Furniture as FurnitureItem, FurnitureType, CanvasConfig } from "../types";
 
@@ -10,9 +11,15 @@ interface FurnitureProps {
   furniture: FurnitureItem[];
   furnitureImages: Record<FurnitureType, HTMLImageElement | null>;
   selectedFurnitureId: string | null;
+  selectedFurnitureIds?: Set<string>;
   snapMode: "grid" | "half" | "free";
-  onFurnitureClick: (furnitureId: string) => void;
+  onFurnitureClick: (furnitureId: string, e?: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   onFurnitureDragEnd: (furnitureId: string, position: Point) => void;
+  multiDragDelta?: Point;
+  onMultiDragStart?: () => void;
+  onMultiDragMove?: (delta: Point) => void;
+  onMultiDragEnd?: (delta: Point) => void;
+  zoom?: number;
 }
 
 export function Furniture({
@@ -20,11 +27,21 @@ export function Furniture({
   furniture,
   furnitureImages,
   selectedFurnitureId,
+  selectedFurnitureIds = new Set(),
   snapMode,
   onFurnitureClick,
   onFurnitureDragEnd,
+  multiDragDelta,
+  onMultiDragStart,
+  onMultiDragMove,
+  onMultiDragEnd,
+  zoom = 1,
 }: FurnitureProps) {
   const { gridSize, pixelsPerFoot } = config;
+
+  // Track multi-drag start position and which furniture is being dragged
+  const multiDragStartRef = useRef<Point | null>(null);
+  const draggingFurnitureIdRef = useRef<string | null>(null);
 
   // Snap function based on mode
   const snapFurniture = (value: number) => {
@@ -42,9 +59,16 @@ export function Furniture({
     <Group>
       {furniture.map((item) => {
         const isSelected = selectedFurnitureId === item.id;
+        const isMultiSelected = selectedFurnitureIds.has(item.id);
         const widthPx = item.width * pixelsPerFoot;
         const heightPx = item.height * pixelsPerFoot;
         const image = furnitureImages[item.type];
+
+        // Calculate preview offset for multi-selected furniture that isn't being dragged
+        const isBeingDragged = draggingFurnitureIdRef.current === item.id;
+        const previewOffset = (isMultiSelected && !isBeingDragged && multiDragDelta)
+          ? multiDragDelta
+          : { x: 0, y: 0 };
 
         // Adjust dimensions if rotated 90 or 270 degrees
         const isRotated90or270 = item.rotation === 90 || item.rotation === 270;
@@ -54,21 +78,69 @@ export function Furniture({
         return (
           <Group
             key={item.id}
-            x={item.position.x}
-            y={item.position.y}
+            x={item.position.x + previewOffset.x}
+            y={item.position.y + previewOffset.y}
             draggable
+            onDragStart={(e) => {
+              // Track start position for multi-drag
+              if (isMultiSelected && onMultiDragEnd) {
+                const group = e.target;
+                multiDragStartRef.current = { x: group.x(), y: group.y() };
+                draggingFurnitureIdRef.current = item.id;
+                onMultiDragStart?.();
+              }
+            }}
             onDragMove={(e) => {
               const node = e.target;
               node.x(snapFurniture(node.x()));
               node.y(snapFurniture(node.y()));
+
+              // Update multi-drag preview delta
+              if (isMultiSelected && multiDragStartRef.current && onMultiDragMove) {
+                const delta = {
+                  x: node.x() - multiDragStartRef.current.x,
+                  y: node.y() - multiDragStartRef.current.y,
+                };
+                onMultiDragMove(delta);
+              }
             }}
             onDragEnd={(e) => {
               const node = e.target;
-              onFurnitureDragEnd(item.id, { x: node.x(), y: node.y() });
+              const newPos = { x: node.x(), y: node.y() };
+
+              // Handle multi-drag
+              if (isMultiSelected && onMultiDragEnd && multiDragStartRef.current) {
+                const delta = {
+                  x: newPos.x - item.position.x,
+                  y: newPos.y - item.position.y,
+                };
+                // Reset position (will be updated by parent)
+                node.x(item.position.x);
+                node.y(item.position.y);
+                multiDragStartRef.current = null;
+                draggingFurnitureIdRef.current = null;
+                onMultiDragEnd(delta);
+              } else {
+                onFurnitureDragEnd(item.id, newPos);
+              }
             }}
-            onClick={() => onFurnitureClick(item.id)}
-            onTap={() => onFurnitureClick(item.id)}
+            onClick={(e) => onFurnitureClick(item.id, e)}
+            onTap={(e) => onFurnitureClick(item.id, e)}
           >
+            {/* Multi-selection highlight */}
+            {isMultiSelected && (
+              <Rect
+                x={-displayWidth / 2 - 6}
+                y={-displayHeight / 2 - 6}
+                width={displayWidth + 12}
+                height={displayHeight + 12}
+                stroke="#3b82f6"
+                strokeWidth={2 / zoom}
+                dash={[6 / zoom, 3 / zoom]}
+                fill="transparent"
+                listening={false}
+              />
+            )}
             {/* Background rectangle */}
             <Rect
               x={-displayWidth / 2}
@@ -76,8 +148,8 @@ export function Furniture({
               width={displayWidth}
               height={displayHeight}
               fill="#f5f5f5"
-              stroke={isSelected ? "#3b82f6" : "#999999"}
-              strokeWidth={isSelected ? 2 : 1}
+              stroke={isSelected ? "#3b82f6" : isMultiSelected ? "#3b82f6" : "#999999"}
+              strokeWidth={isSelected || isMultiSelected ? 2 : 1}
               cornerRadius={2}
             />
 
@@ -96,8 +168,8 @@ export function Furniture({
               />
             )}
 
-            {/* Selection indicator */}
-            {isSelected && (
+            {/* Selection indicator (only for single selection, not multi) */}
+            {isSelected && !isMultiSelected && (
               <Rect
                 x={-displayWidth / 2 - 4}
                 y={-displayHeight / 2 - 4}
