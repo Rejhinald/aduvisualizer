@@ -153,17 +153,17 @@ export function Furniture({
               cornerRadius={2}
             />
 
-            {/* Furniture SVG image */}
+            {/* Furniture SVG image - rotates around group center (0,0) */}
             {image && (
               <KonvaImage
                 image={image}
-                x={-displayWidth / 2}
-                y={-displayHeight / 2}
-                width={displayWidth}
-                height={displayHeight}
+                x={0}
+                y={0}
+                width={widthPx}
+                height={heightPx}
                 rotation={item.rotation}
-                offsetX={item.rotation === 90 ? 0 : item.rotation === 180 ? displayWidth : item.rotation === 270 ? displayHeight : 0}
-                offsetY={item.rotation === 90 ? displayWidth : item.rotation === 180 ? displayHeight : item.rotation === 270 ? 0 : 0}
+                offsetX={widthPx / 2}
+                offsetY={heightPx / 2}
                 listening={false}
               />
             )}

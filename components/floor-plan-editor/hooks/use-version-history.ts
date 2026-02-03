@@ -131,19 +131,21 @@ export function useVersionHistory({
         const response = await api.listSnapshots(projectId);
         if (isMountedRef.current && response.status === "success") {
           // Convert API response to EditorSnapshot format
+          // The API snapshot data has the same runtime structure as EditorSnapshot["data"]
+          // but TypeScript types differ (RoomData vs Room, etc.), so we cast through unknown
           const autoSaves: EditorSnapshot[] = response.data.autoSaves.map(s => ({
             id: s.id,
             timestamp: s.createdAt,
             type: "auto" as const,
             label: s.label,
-            data: s.data as EditorSnapshot["data"],
+            data: s.data as unknown as EditorSnapshot["data"],
           }));
           const manualSaves: EditorSnapshot[] = response.data.manualSaves.map(s => ({
             id: s.id,
             timestamp: s.createdAt,
             type: "manual" as const,
             label: s.label,
-            data: s.data as EditorSnapshot["data"],
+            data: s.data as unknown as EditorSnapshot["data"],
           }));
 
           setHistory({ autoSaves, manualSaves });
@@ -226,7 +228,7 @@ export function useVersionHistory({
           projectId,
           blueprintId,
           type: "auto",
-          data: snapshotData as api.SnapshotData,
+          data: snapshotData as unknown as api.SnapshotData,
         });
 
         if (response.status === "success") {
@@ -283,7 +285,7 @@ export function useVersionHistory({
           blueprintId,
           type: "manual",
           label,
-          data: snapshotData as api.SnapshotData,
+          data: snapshotData as unknown as api.SnapshotData,
         });
 
         if (response.status === "success") {
@@ -344,7 +346,7 @@ export function useVersionHistory({
             timestamp: response.data.snapshot.createdAt,
             type: response.data.snapshot.type,
             label: response.data.snapshot.label,
-            data: response.data.snapshot.data as EditorSnapshot["data"],
+            data: response.data.snapshot.data as unknown as EditorSnapshot["data"],
           };
         }
       } catch (error) {

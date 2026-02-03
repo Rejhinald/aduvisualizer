@@ -4,7 +4,7 @@ import React from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { ZoomIn, ZoomOut, Maximize2, Grid3x3, Lock, Unlock } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, Grid3x3, Lock, Unlock, Download } from "lucide-react";
 
 interface CanvasControlsProps {
   zoom: number;
@@ -15,6 +15,7 @@ interface CanvasControlsProps {
   onResetView: () => void;
   onToggleGrid: (show: boolean) => void;
   onToggleLock: (locked: boolean) => void;
+  onExport?: () => void;
 }
 
 export function CanvasControls({
@@ -26,6 +27,7 @@ export function CanvasControls({
   onResetView,
   onToggleGrid,
   onToggleLock,
+  onExport,
 }: CanvasControlsProps) {
   return (
     <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2 bg-white/90 backdrop-blur-sm px-3 py-2 rounded-lg shadow-md border border-gray-200">
@@ -90,6 +92,24 @@ export function CanvasControls({
           className="h-5 w-9"
         />
       </div>
+
+      {onExport && (
+        <>
+          <div className="w-px h-6 bg-gray-200" />
+
+          {/* Export button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onExport}
+            className="h-8 gap-1.5 text-xs"
+            title="Export blueprint"
+          >
+            <Download className="h-4 w-4" />
+            Export
+          </Button>
+        </>
+      )}
     </div>
   );
 }

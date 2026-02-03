@@ -115,7 +115,11 @@ export function useDrawing({
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (!selectedRoomType) return;
 
-    const clickedOnEmpty = e.target === e.target.getStage();
+    // Check if clicked on empty area (stage or click-catcher rect)
+    const target = e.target;
+    const isStage = target === target.getStage();
+    const isClickCatcher = target.name?.() === "click-catcher";
+    const clickedOnEmpty = isStage || isClickCatcher;
     if (!clickedOnEmpty) return;
 
     const stage = e.target.getStage();

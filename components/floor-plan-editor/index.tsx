@@ -29,6 +29,7 @@ import { Grid, ADUBoundary, Rooms, Doors, Windows, Furniture, DrawingPreview } f
 import { ModeSelector, RoomSelector, DoorSelector, WindowSelector, FurnitureSelector } from "./sidebar";
 import { ADUAreaIndicator, Compass, CanvasControls } from "./overlay";
 import { RoomList, DoorList, WindowList, FurnitureList } from "./lists";
+import { ExportDialog } from "./export";
 import type { Furniture as FurnitureItem, FurnitureType, PlacementMode } from "./types";
 import { FURNITURE_CONFIG, MAX_HISTORY } from "./constants";
 
@@ -90,6 +91,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const [editBoundaryMode, setEditBoundaryMode] = useState(false);
   const [isCanvasLocked, setIsCanvasLocked] = useState(false);
   const [furnitureSnapMode, setFurnitureSnapMode] = useState<"grid" | "half" | "free">("half");
+  const [showExportDialog, setShowExportDialog] = useState(false);
 
   // Delete confirmation dialog
   const [deleteDialog, setDeleteDialog] = useState<{
@@ -188,9 +190,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     handleCanvasDragOver,
     handleCanvasDrop,
   } = useDragDrop({
-    config,
-    zoom,
-    panOffset,
+    stageRef,
     snapToGrid,
     onPlaceFurniture: handleAddFurniture,
     onPlaceDoor: handleAddDoor,
@@ -735,6 +735,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
             onResetView={resetView}
             onToggleGrid={setShowGrid}
             onToggleLock={setIsCanvasLocked}
+            onExport={() => setShowExportDialog(true)}
           />
 
           {/* Konva Stage */}
@@ -862,6 +863,21 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Export Dialog */}
+      <ExportDialog
+        open={showExportDialog}
+        onOpenChange={setShowExportDialog}
+        stageRef={stageRef}
+        rooms={rooms}
+        doors={doors}
+        windows={windows}
+        furniture={furniture}
+        aduBoundary={aduBoundary}
+        config={config}
+        blueprintId={blueprintId ?? undefined}
+        projectName="ADU Floor Plan"
+      />
     </div>
   );
 }

@@ -239,28 +239,25 @@ export function Rooms({
     return `#${(r << 16 | g << 8 | b).toString(16).padStart(6, '0')}`;
   };
 
-  // Calculate dynamic font size based on room dimensions and zoom
-  // Text should fit within the room and scale appropriately with zoom
+  // Calculate dynamic font size based on room dimensions
+  // Text scales with the room - when zoomed out, text gets smaller proportionally
   const calculateDynamicFontSize = useCallback((roomWidth: number, roomHeight: number, textLength: number): number => {
     // Calculate the smallest dimension of the room
     const minDimension = Math.min(roomWidth, roomHeight);
 
-    // Base font size that would fit in the room (roughly 1/5 of smallest dimension for main text)
-    const roomBasedSize = minDimension / 5;
+    // Base font size that would fit in the room (roughly 1/6 of smallest dimension)
+    const roomBasedSize = minDimension / 6;
 
     // Adjust based on text length (longer room names need smaller font)
-    const textFactor = Math.min(1, 10 / Math.max(textLength, 1));
+    const textFactor = Math.min(1, 8 / Math.max(textLength, 1));
 
-    // Calculate the size, with constraints
-    const baseFontSize = 14;
-    const calculatedSize = Math.min(roomBasedSize * textFactor, baseFontSize * 1.5);
+    // Calculate the size with room-based scaling
+    const calculatedSize = roomBasedSize * textFactor;
 
-    // Apply minimum and maximum bounds (in canvas units before zoom adjustment)
-    const clampedSize = Math.max(8, Math.min(20, calculatedSize));
-
-    // Divide by zoom to maintain visual consistency
-    return clampedSize / zoom;
-  }, [zoom]);
+    // Apply minimum and maximum bounds (in canvas/world units)
+    // Text will scale naturally with zoom since we don't divide by zoom
+    return Math.max(10, Math.min(24, calculatedSize));
+  }, []);
 
   // Check if an opening (door/window) is on a wall segment
   const isOpeningOnWall = useCallback((wallStart: Point, wallEnd: Point, opening: { position: Point; rotation: number; width: number }): boolean => {

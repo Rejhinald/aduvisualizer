@@ -9,5 +9,11 @@
       "Bash(ls \"c:\\\\Users\\\\Admin\\\\Documents\\\\Work Repo\\\\aduvisualizer\\\\app\\\\api\"\" 2>&1 || echo \"No api directory \")",
       "Bash(npx tsc:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "postgres",
+    "context7",
+    "github"
+  ],
+  "enableAllProjectMcpServers": true
 }

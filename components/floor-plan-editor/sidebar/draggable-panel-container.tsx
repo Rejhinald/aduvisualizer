@@ -9,6 +9,8 @@ import {
   useSensor,
   useSensors,
   DragEndEvent,
+  DragStartEvent,
+  DragOverlay,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -83,6 +85,7 @@ export function DraggablePanelContainer({
 }: DraggablePanelContainerProps) {
   const [panelOrder, setPanelOrder] = useState<string[]>(defaultPanelIds);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   // Load saved order from localStorage
   useEffect(() => {
@@ -128,10 +131,17 @@ export function DraggablePanelContainer({
     })
   );
 
+  // Handle drag start
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  }, []);
+
   // Handle drag end
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
+
+      setActiveId(null);
 
       if (over && active.id !== over.id) {
         setPanelOrder((items) => {
@@ -163,10 +173,14 @@ export function DraggablePanelContainer({
     return <div className={className}>{children}</div>;
   }
 
+  // Get active child for overlay
+  const activeChild = activeId ? childrenByKey[activeId] : null;
+
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
       <SortableContext items={panelOrder} strategy={verticalListSortingStrategy}>
@@ -182,6 +196,15 @@ export function DraggablePanelContainer({
           })}
         </div>
       </SortableContext>
+
+      {/* Drag overlay - shows a clean preview while dragging */}
+      <DragOverlay dropAnimation={null}>
+        {activeChild ? (
+          <div className="opacity-90 shadow-xl rounded-lg border border-primary/30 bg-background">
+            {activeChild}
+          </div>
+        ) : null}
+      </DragOverlay>
     </DndContext>
   );
 }

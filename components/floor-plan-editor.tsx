@@ -14,7 +14,7 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { Stage, Layer, Group } from "react-konva";
+import { Stage, Layer, Group, Rect } from "react-konva";
 import type Konva from "konva";
 import {
   AlertDialog,
@@ -87,6 +87,7 @@ import {
   FurnitureList,
   ADUSummary,
 } from "./floor-plan-editor/lists";
+import { ExportDialog } from "./floor-plan-editor/export";
 import type {
   Furniture as FurnitureItem,
   FurnitureType,
@@ -226,6 +227,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const [editBoundaryMode, setEditBoundaryMode] = useState(false);
   const [isCanvasLocked, setIsCanvasLocked] = useState(false);
   const [furnitureSnapMode, setFurnitureSnapMode] = useState<"grid" | "half" | "free">("half");
+  const [showExportDialog, setShowExportDialog] = useState(false);
 
   // Delete confirmation dialog (supports single and batch delete)
   const [deleteDialog, setDeleteDialog] = useState<{
@@ -617,7 +619,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   const handleAddFurniture = useCallback((type: FurnitureType, position: Point) => {
     const furnitureConfig = FURNITURE_CONFIG[type];
     const newFurniture: FurnitureItem = {
-      id: `furniture-${Date.now()}-${Math.random()}`,
+      id: crypto.randomUUID(),
       type,
       position,
       rotation: 0,
@@ -658,23 +660,6 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     logCreate("window", newWindow.id, { type: windowType, position });
   }, [logCreate]);
 
-  // Drag and drop
-  const {
-    canvasContainerRef,
-    handleDragStart,
-    handleDragEnd,
-    handleCanvasDragOver,
-    handleCanvasDrop,
-  } = useDragDrop({
-    config,
-    zoom,
-    panOffset,
-    snapToGrid,
-    onPlaceFurniture: handleAddFurniture,
-    onPlaceDoor: handleAddDoor,
-    onPlaceWindow: handleAddWindow,
-  });
-
   // ADU transform for coordinate conversion when lot is loaded with rotation
   const aduTransform = useMemo(() => {
     if (!lot || !showLotOverlay) return undefined;
@@ -686,6 +671,22 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       pixelsPerFoot,
     };
   }, [lot, showLotOverlay, canvasCenter, pixelsPerFoot, previewOffsetX, previewOffsetY, previewRotation]);
+
+  // Drag and drop
+  const {
+    canvasContainerRef,
+    handleDragStart,
+    handleDragEnd,
+    handleCanvasDragOver,
+    handleCanvasDrop,
+  } = useDragDrop({
+    snapToGrid,
+    stageRef,
+    aduTransform,
+    onPlaceFurniture: handleAddFurniture,
+    onPlaceDoor: handleAddDoor,
+    onPlaceWindow: handleAddWindow,
+  });
 
   // Drawing
   const {
@@ -905,7 +906,11 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
 
   // Handle mouse events on canvas
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
-    const clickedOnEmpty = e.target === e.target.getStage();
+    // Check if clicked on empty space (Stage, Layer, or click-catcher)
+    const target = e.target;
+    const isStage = target === target.getStage();
+    const isClickCatcher = target.name?.() === "click-catcher";
+    const clickedOnEmpty = isStage || isClickCatcher;
 
     if (clickedOnEmpty) {
       // Clear single selections
@@ -966,12 +971,46 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       return;
     }
 
-    // Calculate selection rect
+    // Transform world coords to ADU-local coords when lot is loaded
+    const worldToLocal = (point: Point): Point => {
+      if (!aduTransform) return point;
+
+      if (aduTransform.rotation === 0) {
+        // No rotation, just offset
+        const offsetPx = {
+          x: aduTransform.offsetX * aduTransform.pixelsPerFoot,
+          y: aduTransform.offsetY * aduTransform.pixelsPerFoot,
+        };
+        return {
+          x: point.x - offsetPx.x,
+          y: point.y - offsetPx.y,
+        };
+      }
+
+      const { canvasCenter, rotation, offsetX, offsetY, pixelsPerFoot: ppf } = aduTransform;
+      const offsetPx = { x: offsetX * ppf, y: offsetY * ppf };
+      const groupX = canvasCenter.x + offsetPx.x;
+      const groupY = canvasCenter.y + offsetPx.y;
+      const tx = point.x - groupX;
+      const ty = point.y - groupY;
+      const angleRad = (-rotation * Math.PI) / 180;
+      const cos = Math.cos(angleRad);
+      const sin = Math.sin(angleRad);
+      const rx = tx * cos - ty * sin;
+      const ry = tx * sin + ty * cos;
+      return { x: rx + canvasCenter.x, y: ry + canvasCenter.y };
+    };
+
+    // Transform marquee corners to ADU-local space
+    const localStart = worldToLocal(marqueeStart);
+    const localEnd = worldToLocal(marqueeEnd);
+
+    // Calculate selection rect in ADU-local space
     const selectionRect = {
-      x: Math.min(marqueeStart.x, marqueeEnd.x),
-      y: Math.min(marqueeStart.y, marqueeEnd.y),
-      width: Math.abs(marqueeEnd.x - marqueeStart.x),
-      height: Math.abs(marqueeEnd.y - marqueeStart.y),
+      x: Math.min(localStart.x, localEnd.x),
+      y: Math.min(localStart.y, localEnd.y),
+      width: Math.abs(localEnd.x - localStart.x),
+      height: Math.abs(localEnd.y - localStart.y),
     };
 
     // Only select if dragged a meaningful distance
@@ -1038,7 +1077,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     setIsMarqueeSelecting(false);
     setMarqueeStart(null);
     setMarqueeEnd(null);
-  }, [isMarqueeSelecting, marqueeStart, marqueeEnd, rooms, doors, windows, furniture, pixelsPerFoot]);
+  }, [isMarqueeSelecting, marqueeStart, marqueeEnd, rooms, doors, windows, furniture, pixelsPerFoot, aduTransform]);
 
   // Check if there's an active multi-selection
   const hasMultiSelection = selectedRoomIds.size + selectedDoorIds.size + selectedWindowIds.size + selectedFurnitureIds.size > 0;
@@ -1863,6 +1902,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
             onResetView={resetView}
             onToggleGrid={setShowGrid}
             onToggleLock={setIsCanvasLocked}
+            onExport={() => setShowExportDialog(true)}
           />
 
           {/* Konva Stage */}
@@ -1901,6 +1941,16 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
             onWheel={handleWheel}
           >
             <Layer>
+              {/* Click catcher - invisible rect to catch clicks on empty canvas space */}
+              <Rect
+                x={-10000}
+                y={-10000}
+                width={20000}
+                height={20000}
+                fill="transparent"
+                name="click-catcher"
+              />
+
               {/* Grid - behind satellite when not in satellite mode */}
               {!showSatelliteView && (
                 <Grid config={config} showGrid={showGrid} zoom={zoom} panOffset={panOffset} />
@@ -2426,6 +2476,23 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Export Dialog */}
+      <ExportDialog
+        open={showExportDialog}
+        onOpenChange={setShowExportDialog}
+        stageRef={stageRef}
+        rooms={rooms}
+        doors={doors}
+        windows={windows}
+        furniture={furniture}
+        aduBoundary={aduBoundary}
+        config={config}
+        lot={lot}
+        blueprintId={blueprintId ?? undefined}
+        projectName="ADU Floor Plan"
+        address={lot?.address}
+      />
 
     </div>
   );
