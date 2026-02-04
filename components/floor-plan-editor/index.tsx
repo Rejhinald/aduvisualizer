@@ -25,11 +25,13 @@ import { useActionLogger } from "@/lib/hooks/use-action-logger";
 
 // Import modular components
 import { useCanvasConfig, useFurnitureImages, useZoomPan, useDragDrop, useDrawing } from "./hooks";
-import { Grid, ADUBoundary, Rooms, Doors, Windows, Furniture, DrawingPreview } from "./canvas";
-import { ModeSelector, RoomSelector, DoorSelector, WindowSelector, FurnitureSelector } from "./sidebar";
+import { Grid, ADUBoundary, Rooms, Doors, Windows, Furniture, DrawingPreview, CameraMarker } from "./canvas";
+import { ModeSelector, RoomSelector, DoorSelector, WindowSelector, FurnitureSelector, FinishesPanel } from "./sidebar";
 import { ADUAreaIndicator, Compass, CanvasControls } from "./overlay";
 import { RoomList, DoorList, WindowList, FurnitureList } from "./lists";
 import { ExportDialog } from "./export";
+import { useFinishes } from "@/lib/api/hooks";
+import type { CameraPlacement, RoomFinish, TemplateOption, TierOption } from "@/lib/api/client";
 import type { Furniture as FurnitureItem, FurnitureType, PlacementMode } from "./types";
 import { FURNITURE_CONFIG, MAX_HISTORY } from "./constants";
 
@@ -50,6 +52,25 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
     blueprintId,
     enabled: !!projectId,
   });
+
+  // Finishes and 3D render management
+  const {
+    finishes,
+    options: finishesOptions,
+    renderStatus,
+    loading: finishesLoading,
+    rendering,
+    loadFinishes,
+    ensureFinishes,
+    updateRoomFinish,
+    updateCamera,
+    applyTemplate,
+    generateRender,
+    updateFinishes,
+  } = useFinishes(blueprintId ?? undefined);
+
+  // Selected camera state for UI feedback
+  const [isCameraSelected, setIsCameraSelected] = useState(false);
 
   // Canvas configuration
   const config = useCanvasConfig();
@@ -322,7 +343,7 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
   // Calculate total area
   const totalArea = rooms.reduce((sum, room) => sum + room.area, 0);
 
-  // Update parent with floor plan
+  // Update parent with floor plan (including all editor data for 3D visualization)
   useEffect(() => {
     const floorPlan: FloorPlan = {
       id: crypto.randomUUID(),
@@ -334,12 +355,32 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       gridSize: 1,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      // Include editor-specific fields for 3D visualization
+      furniture: furniture.map(f => ({
+        id: f.id,
+        type: f.type,
+        position: f.position,
+        rotation: f.rotation,
+        width: f.width,
+        height: f.height,
+      })),
+      aduBoundary,
+      pixelsPerFoot,
+      canvasWidth: extendedCanvasSize,
+      canvasHeight: extendedCanvasSize,
     };
     onPlanChange(floorPlan);
-  }, [rooms, doors, windows, totalArea, onPlanChange]);
+  }, [rooms, doors, windows, furniture, aduBoundary, totalArea, pixelsPerFoot, extendedCanvasSize, onPlanChange]);
+
+  // Load finishes when blueprintId is available
+  useEffect(() => {
+    if (blueprintId) {
+      loadFinishes(blueprintId);
+    }
+  }, [blueprintId, loadFinishes]);
 
   // Handle mouse events on canvas
-  const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseDown = useCallback(async (e: Konva.KonvaEventObject<MouseEvent>) => {
     const clickedOnEmpty = e.target === e.target.getStage();
 
     if (clickedOnEmpty) {
@@ -348,12 +389,38 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
       setSelectedWindowId(null);
       setSelectedBoundaryPointIndex(null);
       setSelectedFurnitureId(null);
+      setIsCameraSelected(false);
 
       if (placementMode === "room" && selectedRoomType) {
         drawingMouseDown(e);
       }
+
+      // Camera placement in finishes mode
+      if (placementMode === "finishes" && !finishes?.cameraPlacement) {
+        const stage = e.target.getStage();
+        if (stage) {
+          const pointerPos = stage.getPointerPosition();
+          if (pointerPos) {
+            // Convert screen coordinates to world coordinates
+            const worldPos = stageToWorld(pointerPos);
+            const snappedPos = {
+              x: snapToGrid(worldPos.x),
+              y: snapToGrid(worldPos.y),
+            };
+
+            // Create new camera placement
+            await ensureFinishes();
+            updateCamera({
+              position: snappedPos,
+              rotation: 0,
+              fov: 60,
+              height: 5, // Default eye level height in feet
+            });
+          }
+        }
+      }
     }
-  }, [placementMode, selectedRoomType, drawingMouseDown]);
+  }, [placementMode, selectedRoomType, drawingMouseDown, finishes?.cameraPlacement, stageToWorld, snapToGrid, ensureFinishes, updateCamera]);
 
   // Handle room drag end
   const handleRoomDragEnd = useCallback((roomId: string, e: Konva.KonvaEventObject<DragEvent>) => {
@@ -644,6 +711,37 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
           </>
         )}
 
+        {/* Finishes Mode Controls */}
+        {placementMode === "finishes" && (
+          <FinishesPanel
+            finishes={finishes}
+            options={finishesOptions}
+            rooms={rooms.map(r => ({ id: r.id, name: r.name, type: r.type }))}
+            renderStatus={renderStatus}
+            loading={finishesLoading}
+            rendering={rendering}
+            onUpdateRoomFinish={async (roomFinish: RoomFinish) => {
+              await ensureFinishes();
+              await updateRoomFinish(roomFinish);
+            }}
+            onUpdateCamera={async (camera: CameraPlacement | null) => {
+              await ensureFinishes();
+              await updateCamera(camera);
+            }}
+            onApplyTemplate={async (template: TemplateOption, overwrite: boolean) => {
+              await ensureFinishes();
+              await applyTemplate(template, overwrite);
+            }}
+            onGenerateRender={async (type: "topdown" | "firstperson", quality: "preview" | "final") => {
+              await generateRender(type, quality);
+            }}
+            onUpdateTier={async (tier: TierOption) => {
+              await ensureFinishes();
+              await updateFinishes({ globalTier: tier });
+            }}
+          />
+        )}
+
         {/* Room List (always show when in room or select mode) */}
         {(placementMode === "room" || placementMode === "select") && (
           <RoomList
@@ -831,6 +929,29 @@ export function FloorPlanEditor({ onPlanChange }: FloorPlanEditorProps) {
                   setFurniture(furniture.map(f => f.id === id ? { ...f, position: pos } : f));
                 }}
               />
+
+              {/* Camera Marker for First-Person Renders */}
+              {finishes?.cameraPlacement && (
+                <CameraMarker
+                  camera={finishes.cameraPlacement}
+                  selected={isCameraSelected}
+                  onSelect={() => setIsCameraSelected(true)}
+                  onDragEnd={async (position) => {
+                    await ensureFinishes();
+                    updateCamera({
+                      ...finishes.cameraPlacement!,
+                      position,
+                    });
+                  }}
+                  onRotate={async (rotation) => {
+                    await ensureFinishes();
+                    updateCamera({
+                      ...finishes.cameraPlacement!,
+                      rotation,
+                    });
+                  }}
+                />
+              )}
 
               {/* Drawing Preview */}
               <DrawingPreview

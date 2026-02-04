@@ -69,6 +69,22 @@ export interface FloorPlan {
   gridSize: number; // size of each grid cell in feet
   createdAt: string;
   updatedAt: string;
+  // Editor-specific fields (optional for backwards compatibility)
+  furniture?: EditorFurniture[];
+  aduBoundary?: Point[];
+  pixelsPerFoot?: number;
+  canvasWidth?: number;
+  canvasHeight?: number;
+}
+
+// Furniture type for floor plan (matches editor)
+export interface EditorFurniture {
+  id: string;
+  type: string;
+  position: Point;
+  rotation: number;
+  width: number;
+  height: number;
 }
 
 // Finish Types

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
-import { MousePointer2, Square, DoorOpen, RectangleHorizontal, Armchair } from "lucide-react";
+import { MousePointer2, Square, DoorOpen, RectangleHorizontal, Armchair, Paintbrush } from "lucide-react";
 import type { PlacementMode } from "../types";
 
 const MODE_TOOLTIPS: Record<PlacementMode, string> = {
@@ -14,6 +14,7 @@ const MODE_TOOLTIPS: Record<PlacementMode, string> = {
   door: "Drag and drop doors onto walls to create entryways between rooms",
   window: "Drag and drop windows onto exterior walls for natural lighting",
   furniture: "Drag and drop furniture items to furnish your rooms",
+  finishes: "Choose vibes, styles, and generate 3D renders of your floor plan",
 };
 
 interface ModeSelectorProps {
@@ -119,6 +120,24 @@ export function ModeSelector({
               {MODE_TOOLTIPS.furniture}
             </TooltipContent>
           </Tooltip>
+          <div className="border-t pt-2 mt-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={placementMode === "finishes" ? "default" : "outline"}
+                  onClick={() => handleModeChange("finishes")}
+                  className="text-xs w-full justify-start transition-all hover:scale-[1.02] h-auto py-2 px-2 [&:not([data-state='active'])]:hover:text-foreground"
+                >
+                  <Paintbrush className="h-4 w-4 mr-1.5 flex-shrink-0" />
+                  <span className="truncate">Finishes & 3D</span>
+                  <span className="ml-auto text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded flex-shrink-0">AI</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                {MODE_TOOLTIPS.finishes}
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </div>
       </Card>
     </TooltipProvider>

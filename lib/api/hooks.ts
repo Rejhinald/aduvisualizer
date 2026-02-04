@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import * as api from "./client"
 import type {
   Project,
@@ -13,6 +13,14 @@ import type {
   LotData,
   AddressResult,
   ParcelData,
+  Finishes,
+  FinishesOptions,
+  RoomFinish,
+  CameraPlacement,
+  RenderRecord,
+  VibeOption,
+  TierOption,
+  TemplateOption,
 } from "./client"
 
 /**
@@ -507,5 +515,290 @@ export function useLot(blueprintId?: string) {
     updateLotCustomBoundary,
     removeLot,
     clearAddressResults,
+  }
+}
+
+/**
+ * Hook for managing finishes and 3D renders
+ */
+export function useFinishes(blueprintId?: string) {
+  const [finishes, setFinishes] = useState<Finishes | null>(null)
+  const [options, setOptions] = useState<FinishesOptions | null>(null)
+  const [renderStatus, setRenderStatus] = useState<{ available: boolean; provider: string } | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [rendering, setRendering] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  /**
+   * Load finishes options (vibes, templates, lifestyles, tiers)
+   */
+  const loadOptions = useCallback(async () => {
+    try {
+      const response = await api.getFinishesOptions()
+      setOptions(response.data)
+      return response.data
+    } catch (e) {
+      console.error("Failed to load finishes options:", e)
+      return null
+    }
+  }, [])
+
+  /**
+   * Check render service status
+   */
+  const checkRenderStatus = useCallback(async () => {
+    try {
+      const response = await api.getRenderStatus()
+      setRenderStatus(response.data)
+      return response.data
+    } catch (e) {
+      setRenderStatus({ available: false, provider: "unknown" })
+      return { available: false, provider: "unknown" }
+    }
+  }, [])
+
+  /**
+   * Load finishes for blueprint
+   */
+  const loadFinishes = useCallback(async (bpId?: string) => {
+    const id = bpId || blueprintId
+    if (!id) {
+      setError("No blueprint ID provided")
+      return null
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.getFinishes(id)
+      setFinishes(response.data.finish)
+      return response.data.finish
+    } catch (e) {
+      setError((e as Error).message)
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [blueprintId])
+
+  /**
+   * Create finishes for blueprint
+   */
+  const createFinishes = useCallback(async (data?: {
+    globalTemplate?: TemplateOption
+    globalTier?: TierOption
+    roomFinishes?: RoomFinish[]
+  }) => {
+    if (!blueprintId) {
+      setError("No blueprint ID provided")
+      throw new Error("No blueprint ID provided")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.createFinishes({
+        blueprintId,
+        ...data,
+      })
+      setFinishes(response.data.finish)
+      return response.data.finish
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [blueprintId])
+
+  /**
+   * Update finishes
+   */
+  const updateFinishes = useCallback(async (data: {
+    globalTemplate?: TemplateOption | null
+    globalTier?: TierOption
+    roomFinishes?: RoomFinish[]
+  }) => {
+    if (!finishes) {
+      setError("No finishes loaded")
+      throw new Error("No finishes loaded")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.updateFinishes(finishes.id, data)
+      setFinishes(response.data.finish)
+      return response.data.finish
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [finishes])
+
+  /**
+   * Update a single room's finish (optimistic update)
+   */
+  const updateRoomFinish = useCallback(async (roomFinish: RoomFinish) => {
+    if (!finishes) {
+      setError("No finishes loaded")
+      throw new Error("No finishes loaded")
+    }
+
+    // Optimistic update
+    const existingIndex = finishes.roomFinishes.findIndex(rf => rf.roomId === roomFinish.roomId)
+    const updatedRoomFinishes = [...finishes.roomFinishes]
+    if (existingIndex >= 0) {
+      updatedRoomFinishes[existingIndex] = roomFinish
+    } else {
+      updatedRoomFinishes.push(roomFinish)
+    }
+    setFinishes(prev => prev ? { ...prev, roomFinishes: updatedRoomFinishes } : null)
+
+    setError(null)
+    try {
+      const response = await api.updateRoomFinish(finishes.id, roomFinish)
+      setFinishes(response.data.finish)
+      return response.data.finish
+    } catch (e) {
+      // Revert on error
+      setFinishes(finishes)
+      setError((e as Error).message)
+      throw e
+    }
+  }, [finishes])
+
+  /**
+   * Update camera placement
+   */
+  const updateCamera = useCallback(async (camera: CameraPlacement | null) => {
+    if (!finishes) {
+      setError("No finishes loaded")
+      throw new Error("No finishes loaded")
+    }
+
+    // Optimistic update
+    setFinishes(prev => prev ? { ...prev, cameraPlacement: camera || undefined } : null)
+
+    setError(null)
+    try {
+      const response = await api.updateCamera(finishes.id, camera)
+      setFinishes(response.data.finish)
+      return response.data.finish
+    } catch (e) {
+      // Revert on error
+      setFinishes(finishes)
+      setError((e as Error).message)
+      throw e
+    }
+  }, [finishes])
+
+  /**
+   * Apply template preset
+   */
+  const applyTemplate = useCallback(async (
+    template: TemplateOption,
+    overwriteExisting: boolean = false
+  ) => {
+    if (!finishes) {
+      setError("No finishes loaded")
+      throw new Error("No finishes loaded")
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.applyTemplate(finishes.id, { template, overwriteExisting })
+      setFinishes(response.data.finish)
+      return { finish: response.data.finish, appliedTo: response.data.appliedTo }
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }, [finishes])
+
+  /**
+   * Generate a render
+   */
+  const generateRender = useCallback(async (
+    type: "topdown" | "firstperson",
+    quality: "preview" | "final" = "preview"
+  ) => {
+    if (!blueprintId) {
+      setError("No blueprint ID provided")
+      throw new Error("No blueprint ID provided")
+    }
+    setRendering(true)
+    setError(null)
+    try {
+      const response = await api.generateRender({ blueprintId, type, quality })
+      // Reload finishes to get updated render URLs
+      await loadFinishes()
+      return response.data
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    } finally {
+      setRendering(false)
+    }
+  }, [blueprintId, loadFinishes])
+
+  /**
+   * Get render history
+   */
+  const getRenderHistory = useCallback(async (): Promise<RenderRecord[]> => {
+    if (!blueprintId) {
+      return []
+    }
+    try {
+      const response = await api.getRenderHistory(blueprintId)
+      return response.data.history
+    } catch (e) {
+      console.error("Failed to get render history:", e)
+      return []
+    }
+  }, [blueprintId])
+
+  /**
+   * Ensure finishes exist (create if needed)
+   */
+  const ensureFinishes = useCallback(async () => {
+    if (!blueprintId) {
+      throw new Error("No blueprint ID provided")
+    }
+    if (finishes) return finishes
+
+    // Try to load existing
+    const existing = await loadFinishes()
+    if (existing) return existing
+
+    // Create new
+    return createFinishes()
+  }, [blueprintId, finishes, loadFinishes, createFinishes])
+
+  // Auto-load options on mount
+  useEffect(() => {
+    loadOptions()
+    checkRenderStatus()
+  }, [loadOptions, checkRenderStatus])
+
+  return {
+    finishes,
+    options,
+    renderStatus,
+    loading,
+    rendering,
+    error,
+    loadOptions,
+    checkRenderStatus,
+    loadFinishes,
+    createFinishes,
+    updateFinishes,
+    updateRoomFinish,
+    updateCamera,
+    applyTemplate,
+    generateRender,
+    getRenderHistory,
+    ensureFinishes,
   }
 }

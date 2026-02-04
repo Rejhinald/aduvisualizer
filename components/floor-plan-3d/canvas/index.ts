@@ -1,0 +1,5 @@
+export { Floor } from "./Floor"
+export { Walls } from "./Walls"
+export { Doors } from "./Doors"
+export { Windows } from "./Windows"
+export { Furniture } from "./Furniture"

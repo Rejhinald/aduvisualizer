@@ -1005,3 +1005,231 @@ export async function deleteLot(
     method: "DELETE",
   })
 }
+
+// ============ Finishes API ============
+
+export type VibeOption =
+  | "modern_minimal"
+  | "scandinavian"
+  | "industrial"
+  | "bohemian"
+  | "midcentury"
+  | "coastal"
+  | "farmhouse"
+  | "luxury"
+
+export type TierOption = "budget" | "standard" | "premium"
+
+export type TemplateOption =
+  | "builder_basic"
+  | "modern_minimal"
+  | "warm_contemporary"
+  | "scandinavian_light"
+  | "industrial_chic"
+  | "coastal_casual"
+  | "midcentury_modern"
+  | "luxury_contemporary"
+
+export interface RoomFinish {
+  roomId: string
+  roomName: string
+  roomType: string
+  vibe: VibeOption
+  tier: TierOption
+  lifestyle: string[]
+  customNotes?: string
+}
+
+export interface CameraPlacement {
+  position: { x: number; y: number }
+  rotation: number
+  fov: 30 | 60 | 90
+  height: number
+}
+
+export interface RenderRecord {
+  id: string
+  type: "topdown" | "firstperson"
+  quality: "preview" | "final"
+  url: string
+  prompt: string
+  generatedAt: string
+}
+
+export interface Finishes {
+  id: string
+  blueprintId: string
+  globalTemplate?: TemplateOption
+  globalTier: TierOption
+  roomFinishes: RoomFinish[]
+  cameraPlacement?: CameraPlacement
+  topDownPreviewUrl?: string
+  topDownFinalUrl?: string
+  firstPersonPreviewUrl?: string
+  firstPersonFinalUrl?: string
+  renderHistory: RenderRecord[]
+  isDeleted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface VibeDefinition {
+  id: VibeOption
+  label: string
+  description: string
+  thumbnailUrl: string
+  colors: string[]
+  materials: string[]
+  keywords: string[]
+}
+
+export interface TemplateDefinition {
+  id: TemplateOption
+  label: string
+  description: string
+  defaultVibe: VibeOption
+  defaultTier: TierOption
+  keywords: string[]
+}
+
+export interface LifestyleOption {
+  id: string
+  label: string
+  description: string
+  icon?: string
+}
+
+export interface FinishesOptions {
+  vibes: VibeDefinition[]
+  templates: TemplateDefinition[]
+  tiers: Array<{ id: TierOption; label: string; description: string }>
+  lifestylesByRoomType: Record<string, LifestyleOption[]>
+}
+
+/**
+ * Get available finishes options (vibes, templates, lifestyles, tiers)
+ */
+export async function getFinishesOptions(): Promise<ApiResponse<FinishesOptions>> {
+  return fetchApi<FinishesOptions>("/finishes/options")
+}
+
+/**
+ * Get render service status
+ */
+export async function getRenderStatus(): Promise<ApiResponse<{
+  available: boolean
+  provider: string
+}>> {
+  return fetchApi("/finishes/render/status")
+}
+
+/**
+ * Create finishes for a blueprint
+ */
+export async function createFinishes(data: {
+  blueprintId: string
+  globalTemplate?: TemplateOption
+  globalTier?: TierOption
+  roomFinishes?: RoomFinish[]
+}): Promise<ApiResponse<{ finish: Finishes }>> {
+  return fetchApi("/finishes", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Get finishes for a blueprint
+ */
+export async function getFinishes(
+  blueprintId: string
+): Promise<ApiResponse<{ finish: Finishes | null }>> {
+  return fetchApi(`/finishes/blueprint/${blueprintId}`)
+}
+
+/**
+ * Update finishes
+ */
+export async function updateFinishes(
+  finishId: string,
+  data: {
+    globalTemplate?: TemplateOption | null
+    globalTier?: TierOption
+    roomFinishes?: RoomFinish[]
+  }
+): Promise<ApiResponse<{ finish: Finishes }>> {
+  return fetchApi(`/finishes/${finishId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Update a single room's finish
+ */
+export async function updateRoomFinish(
+  finishId: string,
+  data: RoomFinish
+): Promise<ApiResponse<{ finish: Finishes }>> {
+  return fetchApi(`/finishes/${finishId}/room`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Update camera placement
+ */
+export async function updateCamera(
+  finishId: string,
+  data: CameraPlacement | null
+): Promise<ApiResponse<{ finish: Finishes }>> {
+  return fetchApi(`/finishes/${finishId}/camera`, {
+    method: "PUT",
+    body: JSON.stringify({ cameraPlacement: data }),
+  })
+}
+
+/**
+ * Apply a template preset (smart merge - only fills empty selections)
+ */
+export async function applyTemplate(
+  finishId: string,
+  data: {
+    template: TemplateOption
+    overwriteExisting?: boolean
+  }
+): Promise<ApiResponse<{ finish: Finishes; appliedTo: string[] }>> {
+  return fetchApi(`/finishes/${finishId}/apply-template`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Generate a render (top-down or first-person)
+ */
+export async function generateRender(data: {
+  blueprintId: string
+  type: "topdown" | "firstperson"
+  quality?: "preview" | "final"
+}): Promise<ApiResponse<{
+  renderId: string
+  url: string
+  type: "topdown" | "firstperson"
+  quality: "preview" | "final"
+}>> {
+  return fetchApi("/finishes/render", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })
+}
+
+/**
+ * Get render history for a blueprint
+ */
+export async function getRenderHistory(
+  blueprintId: string
+): Promise<ApiResponse<{ history: RenderRecord[] }>> {
+  return fetchApi(`/finishes/render/history/${blueprintId}`)
+}

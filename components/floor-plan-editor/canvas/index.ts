@@ -6,3 +6,4 @@ export { Windows } from "./windows";
 export { Furniture } from "./furniture";
 export { DrawingPreview } from "./drawing-preview";
 export { MarqueeSelection, getBoundingBox, rectsIntersect } from "./marquee-selection";
+export { CameraMarker } from "./camera-marker";

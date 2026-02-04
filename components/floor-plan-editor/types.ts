@@ -1,4 +1,5 @@
 import type { Point, Room, Door, Window, DoorType, WindowType, RoomType } from "@/lib/types";
+import type { LucideIcon } from "lucide-react";
 
 // Furniture types
 export type FurnitureType =
@@ -23,10 +24,10 @@ export interface FurnitureConfig {
   width: number;   // feet
   height: number;  // feet (depth)
   category: "bedroom" | "living" | "bathroom" | "kitchen" | "office";
-  icon: React.ElementType;
+  icon: LucideIcon;
 }
 
-export type PlacementMode = "select" | "room" | "door" | "window" | "furniture";
+export type PlacementMode = "select" | "room" | "door" | "window" | "furniture" | "finishes";
 export type DrawMode = "rectangle" | "polygon";
 export type FurnitureSnapMode = "grid" | "half" | "free";
 
