@@ -1,159 +1,128 @@
 /**
- * Constants for 3D Floor Plan Viewer
+ * 3D Viewer Constants - V2
+ *
+ * All measurements in feet (same as v2 editor)
  */
 
-import type { VibePalette, FurnitureType } from "./types"
-import type { VibeOption } from "@/lib/api/client"
-
-// Standard architectural dimensions (in feet)
+// Standard dimensions (feet)
 export const DIMENSIONS = {
-  CEILING_HEIGHT: 8.33, // 100 inches (8'4")
-  DOOR_HEIGHT: 6.67, // 80 inches (6'8")
-  WINDOW_SILL_HEIGHT: 3.0, // 36 inches
-  WINDOW_DEFAULT_HEIGHT: 4.0, // 48 inches
+  // Walls
   WALL_THICKNESS: 0.5, // 6 inches
-  FLOOR_THICKNESS: 0.1, // 1.2 inches
-  DOOR_FRAME_WIDTH: 0.25, // 3 inches
-  DOOR_PANEL_THICKNESS: 0.125, // 1.5 inches
-  WINDOW_FRAME_WIDTH: 0.2, // 2.4 inches
+  WALL_HEIGHT: 9, // 9 feet ceiling
+
+  // Doors
+  DOOR_WIDTH: 3, // 36 inches
+  DOOR_HEIGHT: 6.67, // 80 inches (6'8")
+
+  // Windows
+  WINDOW_WIDTH: 3,
+  WINDOW_HEIGHT: 4,
+  WINDOW_SILL_HEIGHT: 3, // 36 inches from floor
 } as const
 
 // Camera settings
 export const CAMERA = {
-  TOP_DOWN_HEIGHT: 50, // feet above ground
-  TOP_DOWN_ZOOM: 10,
-  FIRST_PERSON_NEAR: 0.1,
-  FIRST_PERSON_FAR: 1000,
+  // Top-down (orthographic)
+  TOP_DOWN_HEIGHT: 50,
+  TOP_DOWN_NEAR: 1,
+  TOP_DOWN_FAR: 200,
+
+  // First-person (perspective)
+  DEFAULT_EYE_HEIGHT: 5.5, // 5'6" typical eye level
+  DEFAULT_FOV: 75,
   MOVE_SPEED: 10, // feet per second
-  DEFAULT_EYE_HEIGHT: 5.5, // feet
-  DEFAULT_FOV: 60,
+  LOOK_SENSITIVITY: 0.002,
+
+  // General
+  MIN_ZOOM: 0.1,
+  MAX_ZOOM: 5,
 } as const
 
-// Vibe color palettes for materials
-export const VIBE_PALETTES: Record<VibeOption, VibePalette> = {
-  modern_minimal: {
-    wall: "#FFFFFF",
-    floor: "#E8E4E1", // Light beige wood
-    ceiling: "#FFFFFF",
-    trim: "#1A1A1A", // Black trim
-    accent: "#808080",
-    roughness: 0.7,
-    metalness: 0.0,
-  },
-  scandinavian: {
-    wall: "#FAFAF8", // Warm white
-    floor: "#D4C4B0", // Light oak
-    ceiling: "#FFFFFF",
-    trim: "#FFFFFF",
-    accent: "#A3C1AD", // Sage green
-    roughness: 0.8,
-    metalness: 0.0,
-  },
-  industrial: {
-    wall: "#9E9E9E", // Concrete gray
-    floor: "#3E3E3E", // Dark concrete
-    ceiling: "#2C2C2C", // Exposed dark
-    trim: "#1A1A1A",
-    accent: "#8B4513", // Rust
-    roughness: 0.9,
-    metalness: 0.2,
-  },
-  bohemian: {
-    wall: "#F5E6D3", // Warm cream
-    floor: "#C9A876", // Warm wood
-    ceiling: "#FEFEFE",
-    trim: "#6B4423", // Dark wood
-    accent: "#D17A47", // Terracotta
-    roughness: 0.85,
-    metalness: 0.0,
-  },
-  midcentury: {
-    wall: "#F0EBE3", // Off-white
-    floor: "#5D4037", // Walnut
-    ceiling: "#FFFFFF",
-    trim: "#5D4037",
-    accent: "#FF6B35", // Orange
-    roughness: 0.6,
-    metalness: 0.1,
-  },
-  coastal: {
-    wall: "#FFFFFF",
-    floor: "#DED7CB", // Bleached wood
-    ceiling: "#FFFFFF",
-    trim: "#FFFFFF",
-    accent: "#4A90A4", // Ocean blue
-    roughness: 0.75,
-    metalness: 0.0,
-  },
-  farmhouse: {
-    wall: "#FAF9F6", // Cream white
-    floor: "#A68B5B", // Honey wood
-    ceiling: "#FFFFFF",
-    trim: "#FFFFFF",
-    accent: "#2F4538", // Sage
-    roughness: 0.85,
-    metalness: 0.0,
-  },
-  luxury: {
-    wall: "#1A1A1A", // Deep charcoal
-    floor: "#2C2C2C", // Dark marble look
-    ceiling: "#0D0D0D",
-    trim: "#D4AF37", // Gold
-    accent: "#D4AF37",
-    roughness: 0.3,
-    metalness: 0.4,
-  },
-}
+// Material colors (clean SketchUp style)
+export const COLORS = {
+  // Walls
+  WALL: "#F5F5F5", // Light gray walls (solid)
+  WALL_INTERIOR: "#FAFAFA",
+  WALL_PARTITION: "#E8DFD4", // Warm beige for partition walls (half-height)
 
-// Default vibe for rooms without finish selection
-export const DEFAULT_VIBE: VibeOption = "modern_minimal"
+  // Floor
+  FLOOR_DEFAULT: "#E8E4E1", // Warm gray
+  FLOOR_BEDROOM: "#D4C8BE",
+  FLOOR_BATHROOM: "#D9E2E9",
+  FLOOR_KITCHEN: "#DED5C4",
+  FLOOR_LIVING: "#E5DED4",
 
-// Furniture 3D heights and colors
-export const FURNITURE_3D: Record<
-  FurnitureType,
-  { height: number; color: string }
-> = {
-  "bed-double": { height: 2.0, color: "#D4C4B0" },
-  "bed-single": { height: 2.0, color: "#D4C4B0" },
-  "sofa-3seat": { height: 2.5, color: "#808080" },
-  "sofa-2seat": { height: 2.5, color: "#808080" },
-  armchair: { height: 2.5, color: "#808080" },
-  "table-dining": { height: 2.5, color: "#8B4513" },
-  "table-coffee": { height: 1.5, color: "#8B4513" },
-  toilet: { height: 2.0, color: "#FFFFFF" },
-  sink: { height: 3.0, color: "#FFFFFF" },
-  shower: { height: 7.0, color: "#E0E0E0" },
-  bathtub: { height: 2.0, color: "#FFFFFF" },
-  stove: { height: 3.0, color: "#333333" },
-  refrigerator: { height: 6.0, color: "#C0C0C0" },
-  dishwasher: { height: 3.0, color: "#C0C0C0" },
-  desk: { height: 2.5, color: "#A0522D" },
-  chair: { height: 3.0, color: "#666666" },
-}
+  // Doors
+  DOOR_FRAME: "#8B7355", // Wood brown
+  DOOR_PANEL: "#A68B5B",
 
-// Door type configurations
-export const DOOR_TYPES: Record<
-  string,
-  { panelCount: number; hasGlass: boolean; swingAngle: number }
-> = {
-  single: { panelCount: 1, hasGlass: false, swingAngle: 90 },
-  double: { panelCount: 2, hasGlass: false, swingAngle: 90 },
-  sliding: { panelCount: 2, hasGlass: true, swingAngle: 0 },
-  french: { panelCount: 2, hasGlass: true, swingAngle: 90 },
-  opening: { panelCount: 0, hasGlass: false, swingAngle: 0 },
-}
+  // Windows
+  WINDOW_FRAME: "#6B7280", // Gray frame
+  WINDOW_GLASS: "#87CEEB", // Light blue glass
 
-// Window type configurations
-export const WINDOW_TYPES: Record<string, { hasFrame: boolean }> = {
-  standard: { hasFrame: true },
-  bay: { hasFrame: true },
-  picture: { hasFrame: true },
-  sliding: { hasFrame: true },
-}
+  // Furniture
+  FURNITURE_DEFAULT: "#D4A574",
 
-// Tier quality modifiers (affects material properties)
-export const TIER_MODIFIERS: Record<string, { roughnessMultiplier: number; metalnessMultiplier: number }> = {
-  budget: { roughnessMultiplier: 1.1, metalnessMultiplier: 0.8 },
-  standard: { roughnessMultiplier: 1.0, metalnessMultiplier: 1.0 },
-  premium: { roughnessMultiplier: 0.9, metalnessMultiplier: 1.2 },
+  // Ground
+  GROUND: "#C8C8C8",
+
+  // Room type colors (floor)
+  ROOM_TYPES: {
+    bedroom: "#E8DFD5",
+    bathroom: "#D9E7ED",
+    kitchen: "#F0E6D3",
+    living: "#EBE5DB",
+    dining: "#E8E0D0",
+    closet: "#D8D8D8",
+    laundry: "#E0E6EC",
+    entry: "#E5E0D8",
+    corridor: "#E8E8E8",
+    office: "#E5E2DD",
+    other: "#E0E0E0",
+  } as Record<string, string>,
+} as const
+
+// Material properties (roughness, metalness)
+export const MATERIALS = {
+  WALL: { roughness: 0.9, metalness: 0 },
+  FLOOR: { roughness: 0.8, metalness: 0 },
+  DOOR: { roughness: 0.6, metalness: 0 },
+  WINDOW_FRAME: { roughness: 0.4, metalness: 0.2 },
+  WINDOW_GLASS: { roughness: 0.1, metalness: 0.1, opacity: 0.4, transparent: true },
+  FURNITURE: { roughness: 0.7, metalness: 0 },
+} as const
+
+// Furniture heights (for 3D box generation)
+export const FURNITURE_HEIGHTS: Record<string, { height: number; color: string }> = {
+  // Bedroom
+  bed_queen: { height: 2.5, color: "#8B7355" },
+  bed_king: { height: 2.5, color: "#8B7355" },
+  bed_twin: { height: 2.5, color: "#8B7355" },
+  dresser: { height: 3.5, color: "#A68B5B" },
+  nightstand: { height: 2, color: "#A68B5B" },
+
+  // Bathroom
+  toilet: { height: 2.5, color: "#FFFFFF" },
+  sink: { height: 3, color: "#FFFFFF" },
+  bathtub: { height: 2, color: "#FFFFFF" },
+  shower: { height: 7, color: "#E0E0E0" },
+
+  // Kitchen
+  refrigerator: { height: 6, color: "#C0C0C0" },
+  stove: { height: 3, color: "#404040" },
+  dishwasher: { height: 3, color: "#C0C0C0" },
+  kitchen_sink: { height: 3, color: "#C0C0C0" },
+
+  // Living
+  sofa_3seat: { height: 2.5, color: "#6B8E9F" },
+  sofa_2seat: { height: 2.5, color: "#6B8E9F" },
+  armchair: { height: 2.5, color: "#6B8E9F" },
+  coffee_table: { height: 1.5, color: "#8B7355" },
+  dining_table: { height: 2.5, color: "#8B7355" },
+  dining_chair: { height: 3, color: "#A68B5B" },
+
+  // Office
+  desk: { height: 2.5, color: "#A68B5B" },
+  office_chair: { height: 3.5, color: "#404040" },
+  bookshelf: { height: 6, color: "#8B7355" },
 }

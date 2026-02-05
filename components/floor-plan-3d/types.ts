@@ -1,133 +1,96 @@
 /**
- * Types for 3D Floor Plan Viewer
+ * Floor Plan 3D Viewer Types - V2
+ *
+ * Coordinate System:
+ * - v2 Canvas: X = right, Y = down (in feet)
+ * - Three.js: X = right, Y = up, Z = forward (in feet)
+ *
+ * Direct mapping:
+ * - Canvas (x, y) feet -> Three.js (x, 0, y) feet
+ * - Height in Three.js uses Y axis
+ *
+ * Wall Types:
+ * - "solid": Physical wall, renders at full height in 3D
+ * - "virtual": Room divider, NOT rendered in 3D (only for room detection)
+ * - "partition": Half-height wall, renders at partial height in 3D
  */
 
-import type { Point, Room, Door, Window, RoomType, DoorType, WindowType } from "@/lib/types"
-import type { Furniture, FurnitureType, CanvasConfig } from "@/components/floor-plan-editor/types"
-import type { VibeOption, CameraPlacement, RoomFinish } from "@/lib/api/client"
+import type { Blueprint, Corner, Wall, Door, Window, Furniture, Room, WallType } from "@/lib/api/client-v2"
 
-// Camera modes for the viewer
-export type CameraMode = "topdown" | "firstperson"
+// Re-export for convenience
+export type { Blueprint, Corner, Wall, Door, Window, Furniture, Room, WallType }
 
-// Coordinate conversion config
-export interface CoordinateConfig {
-  pixelsPerFoot: number
-  canvasWidth: number
-  canvasHeight: number
-}
+// Camera modes
+export type CameraMode = "top-down" | "first-person"
 
-// 3D point (x = left/right, y = height, z = forward/back)
+// 3D point in Three.js coordinates
 export interface Point3D {
-  x: number
-  y: number
-  z: number
+  x: number // left/right
+  y: number // height
+  z: number // forward/back
 }
 
-// Wall edge derived from room vertices
-export interface WallEdge {
+// Wall segment with openings
+export interface Wall3D {
   id: string
-  start: { x: number; z: number } // in feet (Three.js coords)
-  end: { x: number; z: number }
-  roomIds: string[] // rooms sharing this wall (1 = exterior, 2 = interior)
-  openings: WallOpening[]
-  length: number // in feet
+  start: Point3D
+  end: Point3D
+  thickness: number
+  height: number
   angle: number // radians
+  length: number
+  openings: Opening3D[]
+  wallType: WallType // "solid" | "virtual" | "partition"
 }
 
-// Opening (door or window) in a wall
-export interface WallOpening {
+// Opening in a wall (door or window)
+export interface Opening3D {
   type: "door" | "window"
-  position: number // distance from wall start in feet
-  width: number // feet
-  height: number // feet
-  bottomOffset: number // height from floor (0 for doors, sillHeight for windows)
-  itemId: string // reference to door/window id
+  id: string
+  center: Point3D // center of opening
+  width: number
+  height: number
+  bottomY: number // 0 for doors, sillHeight for windows
+  doorType?: string
+  windowType?: string
 }
 
-// Processed room data for 3D
-export interface Room3D {
+// Floor polygon for a room
+export interface Floor3D {
   id: string
   name: string
-  type: RoomType
-  vertices: Point3D[] // floor polygon in 3D coords
-  center: Point3D
-  boundingBox: {
-    minX: number
-    maxX: number
-    minZ: number
-    maxZ: number
-    width: number
-    depth: number
-  }
-  area: number // sq ft
+  type: string
+  vertices: Point3D[]
   color: string
-  vibe?: VibeOption
-  tier?: string
 }
 
-// Processed door data for 3D
-export interface Door3D {
-  id: string
-  type: DoorType
-  position: Point3D
-  rotation: number // radians
-  width: number // feet
-  height: number // feet
-  wallAngle: number // angle of wall this door is on
-}
-
-// Processed window data for 3D
-export interface Window3D {
-  id: string
-  type: WindowType
-  position: Point3D
-  rotation: number // radians
-  width: number // feet
-  height: number // feet
-  sillHeight: number // height from floor
-  wallAngle: number
-}
-
-// Processed furniture data for 3D
+// Furniture item
 export interface Furniture3D {
   id: string
-  type: FurnitureType
+  type: string
   position: Point3D
   rotation: number // radians
-  width: number // feet
-  depth: number // feet
-  height: number // feet (3D height)
+  width: number
+  depth: number
+  height: number
   color: string
 }
 
-// Material palette for a vibe
-export interface VibePalette {
-  wall: string // hex color
-  floor: string
-  ceiling: string
-  trim: string
-  accent: string
-  roughness: number
-  metalness: number
+// Scene bounds for camera positioning
+export interface SceneBounds {
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+  width: number
+  depth: number
+  centerX: number
+  centerZ: number
 }
 
-// Props for the main 3D viewer
+// Main viewer props
 export interface FloorPlan3DViewerProps {
-  rooms: Room[]
-  doors: Door[]
-  windows: Window[]
-  furniture: Furniture[]
-  aduBoundary: Point[]
-  roomFinishes?: RoomFinish[]
-  cameraPlacement?: CameraPlacement
-  pixelsPerFoot: number
-  canvasWidth: number
-  canvasHeight: number
+  blueprint: Blueprint
   initialCameraMode?: CameraMode
   onCameraModeChange?: (mode: CameraMode) => void
 }
-
-// Re-export common types
-export type { Point, Room, Door, Window, RoomType, DoorType, WindowType }
-export type { Furniture, FurnitureType, CanvasConfig }
-export type { VibeOption, CameraPlacement, RoomFinish }

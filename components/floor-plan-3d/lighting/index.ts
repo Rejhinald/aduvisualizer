@@ -1,1 +1,0 @@
-export { SceneLighting } from "./SceneLighting"
