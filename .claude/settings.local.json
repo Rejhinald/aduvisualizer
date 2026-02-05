@@ -7,13 +7,14 @@
       "Bash(npm run lint)",
       "Bash(npm run build:*)",
       "Bash(ls \"c:\\\\Users\\\\Admin\\\\Documents\\\\Work Repo\\\\aduvisualizer\\\\app\\\\api\"\" 2>&1 || echo \"No api directory \")",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(git checkout:*)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "postgres",
     "context7",
     "github"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }
