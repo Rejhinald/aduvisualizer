@@ -102,7 +102,11 @@ export function WindowsLayer({ config, state, dispatch }: CanvasProps) {
       return
     }
     setIsDragging(true)
-    dispatch({ type: "SELECT", selection: { type: "window", id: windowId } })
+    // Don't clear multi-selection if this window is already part of it
+    const inMulti = multiSelection.some((s) => s.type === "window" && s.id === windowId)
+    if (!inMulti) {
+      dispatch({ type: "SELECT", selection: { type: "window", id: windowId } })
+    }
   }
 
   const handleWindowDragMove = (window: WindowOnWall, e: any) => {
@@ -171,7 +175,7 @@ export function WindowsLayer({ config, state, dispatch }: CanvasProps) {
             x={x}
             y={y}
             rotation={angle}
-            draggable={mode === "select"}
+            draggable={mode === "select" && !(multiSelection.length > 1 && multiSelection.some((s) => s.type === "window" && s.id === window.id))}
             onClick={(e) => handleWindowClick(window.id, e)}
             onTap={(e) => handleWindowClick(window.id, e)}
             onDblClick={(e) => handleWindowDoubleClick(window.id, e)}

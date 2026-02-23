@@ -10,6 +10,12 @@ interface LotSelectorProps {
   dispatch: React.Dispatch<EditorAction>
   showOverlay: boolean
   onToggleOverlay: (show: boolean) => void
+  showSatellite: boolean
+  onToggleSatellite: (show: boolean) => void
+  editBoundary: boolean
+  onToggleEditBoundary: (edit: boolean) => void
+  positionLot: boolean
+  onTogglePositionLot: (position: boolean) => void
 }
 
 interface AddressResult {
@@ -25,6 +31,12 @@ export function LotSelector({
   dispatch,
   showOverlay,
   onToggleOverlay,
+  showSatellite,
+  onToggleSatellite,
+  editBoundary,
+  onToggleEditBoundary,
+  positionLot,
+  onTogglePositionLot,
 }: LotSelectorProps) {
   const [isOpen, setIsOpen] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
@@ -93,44 +105,63 @@ export function LotSelector({
         setLoading(true)
         setError(null)
 
-        // Fetch parcel data
-        const parcelResponse = await api.getParcelData(address.lat, address.lng)
+        // Try to fetch parcel data from GIS
+        let boundaryFeet: Point[] | undefined
+        let boundaryGeo: Array<{ lat: number; lng: number }> | undefined
+        let parcelAddress: string | undefined
+        let source: "gis" | "manual" = "manual"
 
-        if (parcelResponse.data?.parcel) {
-          const parcel = parcelResponse.data.parcel
-
-          // Convert geo coordinates to feet
-          const boundaryFeet = geoToFeet(
-            parcel.boundaryVertices,
-            address.lat,
-            address.lng
-          )
-
-          // Create lot with converted boundary
-          const lotResponse = await api.createLot({
-            blueprintId,
-            address: parcel.situsAddress || address.displayName,
-            geoLat: address.lat,
-            geoLng: address.lng,
-            boundary: boundaryFeet,
-            setbacks: {
-              front: 0,
-              back: 4,
-              left: 4,
-              right: 4,
-            },
-            source: "gis",
-          })
-
-          if (lotResponse.data) {
-            dispatch({ type: "SET_LOT", lot: lotResponse.data })
-            onToggleOverlay(true)
+        try {
+          const parcelResponse = await api.getParcelData(address.lat, address.lng)
+          if (parcelResponse.data?.parcel) {
+            const parcel = parcelResponse.data.parcel
+            if (parcel.boundaryVertices && parcel.boundaryVertices.length >= 3) {
+              boundaryFeet = geoToFeet(parcel.boundaryVertices, address.lat, address.lng)
+              boundaryGeo = parcel.boundaryVertices
+              source = "gis"
+            }
+            parcelAddress = parcel.situsAddress
           }
-        } else {
-          setError("No parcel data found for this address")
+        } catch {
+          // GIS unavailable - continue with default boundary
+        }
+
+        // If no GIS boundary, create a default 60x100 ft rectangle
+        if (!boundaryFeet || boundaryFeet.length < 3) {
+          const halfW = 30 // 60 ft wide
+          const halfD = 50 // 100 ft deep
+          boundaryFeet = [
+            { x: -halfW, y: -halfD },
+            { x: halfW, y: -halfD },
+            { x: halfW, y: halfD },
+            { x: -halfW, y: halfD },
+          ]
+          boundaryGeo = undefined
+          source = "manual"
+        }
+
+        const lotResponse = await api.createLot({
+          blueprintId,
+          address: parcelAddress || address.displayName,
+          geoLat: address.lat,
+          geoLng: address.lng,
+          boundary: boundaryFeet,
+          boundaryVertices: boundaryGeo,
+          setbacks: {
+            front: 0,
+            back: 4,
+            left: 4,
+            right: 4,
+          },
+          source,
+        })
+
+        if (lotResponse.data) {
+          dispatch({ type: "SET_LOT", lot: lotResponse.data })
+          onToggleOverlay(true)
         }
       } catch (err) {
-        setError("Failed to fetch parcel data")
+        setError("Failed to create lot")
         console.error(err)
       } finally {
         setLoading(false)
@@ -274,6 +305,55 @@ export function LotSelector({
       {error && (
         <div className="p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
           {error}
+        </div>
+      )}
+
+      {/* Lot controls */}
+      {lot && showOverlay && (
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={showSatellite}
+              onChange={(e) => onToggleSatellite(e.target.checked)}
+              disabled={!lot.geoLat || !lot.geoLng}
+              className="w-4 h-4"
+            />
+            <span className={!lot.geoLat || !lot.geoLng ? "text-gray-400" : ""}>
+              Satellite imagery
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={positionLot}
+              onChange={(e) => {
+                onTogglePositionLot(e.target.checked)
+                if (e.target.checked) onToggleEditBoundary(false) // Mutually exclusive
+              }}
+              className="w-4 h-4"
+            />
+            <span className={positionLot ? "text-blue-600 font-medium" : ""}>
+              Drag to position
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={editBoundary}
+              onChange={(e) => {
+                onToggleEditBoundary(e.target.checked)
+                if (e.target.checked) onTogglePositionLot(false) // Mutually exclusive
+              }}
+              className="w-4 h-4"
+            />
+            Edit boundary
+          </label>
+          {positionLot && (
+            <div className="p-1.5 bg-blue-50 border border-blue-200 rounded text-[10px] text-blue-600">
+              Click and drag anywhere on the canvas to slide the lot under your blueprint.
+            </div>
+          )}
         </div>
       )}
 

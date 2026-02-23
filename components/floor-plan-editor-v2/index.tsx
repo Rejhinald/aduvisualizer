@@ -53,6 +53,9 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showLotOverlay, setShowLotOverlay] = useState(false)
+  const [showSatellite, setShowSatellite] = useState(false)
+  const [editLotBoundary, setEditLotBoundary] = useState(false)
+  const [positionLotMode, setPositionLotMode] = useState(false)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
   const [aduEditMode, setAduEditMode] = useState(false)
@@ -87,6 +90,10 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
   // Middle mouse button panning state
   const [isMiddleMousePanning, setIsMiddleMousePanning] = useState(false)
   const middleMouseStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null)
+
+  // Lot positioning drag state (when positionLotMode is on, left-click drag moves the lot)
+  const [isPositioningLot, setIsPositioningLot] = useState(false)
+  const lotPositionStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null)
 
   // Canvas config with pan/zoom - initialize with centered view
   const [canvasConfig, setCanvasConfig] = useState<CanvasConfig>(() => {
@@ -158,13 +165,14 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
   // Track state changes for undo/redo history
   const prevStateRef = useRef<string>("")
   useEffect(() => {
-    // Create a hash of the current data state
+    // Create a hash of the current data state including positions
+    // This detects moves/rotations, not just add/delete
     const stateHash = JSON.stringify({
-      corners: state.corners.length,
-      walls: state.walls.length,
-      doors: state.doors.length,
-      windows: state.windows.length,
-      furniture: state.furniture.length,
+      c: state.corners.map((c) => `${c.id}:${c.x}:${c.y}`),
+      w: state.walls.map((w) => `${w.id}:${w.startCornerId}:${w.endCornerId}`),
+      d: state.doors.map((d) => `${d.id}:${d.wallId}:${d.position}`),
+      n: state.windows.map((w) => `${w.id}:${w.wallId}:${w.position}`),
+      f: state.furniture.map((f) => `${f.id}:${f.x}:${f.y}:${f.rotation}`),
     })
 
     // Only take snapshot if data actually changed
@@ -527,13 +535,14 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
   }, [canvasConfig.panX, canvasConfig.panY])
 
   const handleMiddleMouseMove = useCallback((e: any) => {
-    if (isMiddleMousePanning && middleMouseStartRef.current) {
-      const dx = e.evt.clientX - middleMouseStartRef.current.x
-      const dy = e.evt.clientY - middleMouseStartRef.current.y
+    const startRef = middleMouseStartRef.current
+    if (isMiddleMousePanning && startRef) {
+      const dx = e.evt.clientX - startRef.x
+      const dy = e.evt.clientY - startRef.y
       setCanvasConfig((prev) => ({
         ...prev,
-        panX: middleMouseStartRef.current!.panX + dx,
-        panY: middleMouseStartRef.current!.panY + dy,
+        panX: startRef.panX + dx,
+        panY: startRef.panY + dy,
       }))
     }
   }, [isMiddleMousePanning])
@@ -547,6 +556,47 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
       if (stage) stage.container().style.cursor = "default"
     }
   }, [isMiddleMousePanning])
+
+  // Lot positioning handlers (left-click drag moves the lot overlay)
+  const handleLotPositionDown = useCallback((e: any) => {
+    if (!positionLotMode || !state.lot || e.evt.button !== 0) return false
+    e.evt.preventDefault()
+    setIsPositioningLot(true)
+    lotPositionStartRef.current = {
+      x: e.evt.clientX,
+      y: e.evt.clientY,
+      offsetX: state.lot.lotOffsetX || 0,
+      offsetY: state.lot.lotOffsetY || 0,
+    }
+    const stage = e.target.getStage()
+    if (stage) stage.container().style.cursor = "grabbing"
+    return true
+  }, [positionLotMode, state.lot])
+
+  const handleLotPositionMove = useCallback((e: any) => {
+    const startRef = lotPositionStartRef.current
+    if (!isPositioningLot || !startRef) return
+    const dx = (e.evt.clientX - startRef.x) / canvasConfig.zoom
+    const dy = (e.evt.clientY - startRef.y) / canvasConfig.zoom
+    const newOffsetX = startRef.offsetX + dx / canvasConfig.pixelsPerFoot
+    const newOffsetY = startRef.offsetY + dy / canvasConfig.pixelsPerFoot
+    dispatch({ type: "UPDATE_LOT_OFFSET", offsetX: newOffsetX, offsetY: newOffsetY })
+  }, [isPositioningLot, canvasConfig.zoom, canvasConfig.pixelsPerFoot, dispatch])
+
+  const handleLotPositionUp = useCallback(() => {
+    if (!isPositioningLot || !state.lot) return
+    setIsPositioningLot(false)
+    const startRef = lotPositionStartRef.current
+    lotPositionStartRef.current = null
+    // Persist final offset
+    if (startRef && state.lot) {
+      const finalOffsetX = state.lot.lotOffsetX || 0
+      const finalOffsetY = state.lot.lotOffsetY || 0
+      api.updateLot(state.lot.id, { lotOffsetX: finalOffsetX, lotOffsetY: finalOffsetY }).catch((err) =>
+        console.error("Failed to persist lot offset:", err)
+      )
+    }
+  }, [isPositioningLot, state.lot])
 
   const handleToggleGrid = useCallback(() => {
     dispatch({ type: "TOGGLE_GRID" })
@@ -684,22 +734,29 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
           onClick={handleCanvasClick}
           onMouseDown={(e: any) => {
             handleMiddleMouseDown(e)
+            if (handleLotPositionDown(e)) return
             handleCanvasMouseDown(e)
           }}
           onMouseMove={(e: any) => {
             if (isMiddleMousePanning) {
               handleMiddleMouseMove(e)
+            } else if (isPositioningLot) {
+              handleLotPositionMove(e)
             } else {
               handleCanvasMouseMove(e)
             }
           }}
           onMouseUp={(e: any) => {
             handleMiddleMouseUp(e)
+            if (isPositioningLot) {
+              handleLotPositionUp()
+              return
+            }
             handleCanvasMouseUp(e)
           }}
           onDblClick={handleCanvasDoubleClick}
           onWheel={handleWheel}
-          draggable={!state.cameraLocked && state.mode !== "rectangle" && state.mode !== "select" && !state.isSelectionBoxActive}
+          draggable={!state.cameraLocked && !positionLotMode && state.mode !== "rectangle" && state.mode !== "select" && !state.isSelectionBoxActive}
           onDragEnd={(e) => {
             const stage = e.target.getStage()
             if (stage) {
@@ -725,7 +782,10 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
                 config={canvasConfig}
                 lot={state.lot}
                 visible={showLotOverlay}
+                showSatellite={showSatellite}
+                editMode={editLotBoundary}
                 corners={state.corners}
+                dispatch={dispatch}
               />
             )}
 
@@ -960,6 +1020,12 @@ export function FloorPlanEditorV2({ projectId, onSave, onExport }: FloorPlanEdit
                   dispatch={dispatch}
                   showOverlay={showLotOverlay}
                   onToggleOverlay={setShowLotOverlay}
+                  showSatellite={showSatellite}
+                  onToggleSatellite={setShowSatellite}
+                  editBoundary={editLotBoundary}
+                  onToggleEditBoundary={setEditLotBoundary}
+                  positionLot={positionLotMode}
+                  onTogglePositionLot={setPositionLotMode}
                 />
               </div>
             )}

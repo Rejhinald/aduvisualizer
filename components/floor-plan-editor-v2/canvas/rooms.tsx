@@ -93,7 +93,7 @@ export function RoomsLayer({ config, state, dispatch }: CanvasProps) {
 
         return (
           <Group key={room.id}>
-            {/* Room fill - clickable in room/select modes */}
+            {/* Room fill - only interactive in room mode to avoid blocking drag-select */}
             <Line
               points={points}
               closed
@@ -101,6 +101,7 @@ export function RoomsLayer({ config, state, dispatch }: CanvasProps) {
               opacity={opacity}
               stroke={isSelected ? "#dc2626" : isHovered ? "#3b82f6" : COLORS.ROOM_STROKE}
               strokeWidth={isSelected ? 2 / zoom : isHovered ? 1.5 / zoom : 0.5 / zoom}
+              listening={mode === "room"}
               onClick={(e) => handleRoomClick(room.id, e)}
               onTap={(e) => handleRoomClick(room.id, e)}
               onMouseEnter={(e) => handleRoomMouseEnter(room.id, e)}

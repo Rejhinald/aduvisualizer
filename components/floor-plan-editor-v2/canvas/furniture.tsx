@@ -1,5 +1,6 @@
 "use client"
 
+import { useRef } from "react"
 import { Group, Rect, Text, Line, Circle } from "react-konva"
 import type { CanvasProps } from "../types"
 import { PIXELS_PER_FOOT, FURNITURE_DIMENSIONS } from "../constants"
@@ -8,6 +9,9 @@ export function FurnitureLayer({ config, state, dispatch }: CanvasProps) {
   const { zoom } = config
   const { furniture, selection, multiSelection, hoveredElement, mode } = state
   const scale = PIXELS_PER_FOOT
+
+  // Track last drag position for computing incremental deltas in multi-drag
+  const dragLastPosRef = useRef<{ x: number; y: number } | null>(null)
 
   const handleFurnitureClick = (furnitureId: string, e: any) => {
     // Only handle in select/delete modes - let drawing modes bubble to canvas
@@ -49,15 +53,24 @@ export function FurnitureLayer({ config, state, dispatch }: CanvasProps) {
     }
 
     const pos = e.target.position()
+    const worldX = pos.x / scale
+    const worldY = pos.y / scale
+    dragLastPosRef.current = { x: worldX, y: worldY }
+
     dispatch({
       type: "START_DRAG",
-      point: { x: pos.x / scale, y: pos.y / scale },
+      point: { x: worldX, y: worldY },
     })
-    dispatch({ type: "SELECT", selection: { type: "furniture", id: furnitureId } })
+
+    // Don't clear multi-selection if this item is already part of it
+    const inMulti = multiSelection.some((s) => s.type === "furniture" && s.id === furnitureId)
+    if (!inMulti) {
+      dispatch({ type: "SELECT", selection: { type: "furniture", id: furnitureId } })
+    }
   }
 
   const handleFurnitureDragMove = (furnitureId: string, e: any) => {
-    if (mode !== "select") return
+    if (mode !== "select" || !dragLastPosRef.current) return
 
     const pos = e.target.position()
     let x = pos.x / scale
@@ -67,18 +80,28 @@ export function FurnitureLayer({ config, state, dispatch }: CanvasProps) {
     if (state.snapToGrid) {
       x = Math.round(x * 2) / 2 // Snap to 0.5 feet
       y = Math.round(y * 2) / 2
-
-      // Update visual position to snapped value
-      e.target.position({
-        x: x * scale,
-        y: y * scale,
-      })
+      e.target.position({ x: x * scale, y: y * scale })
     }
 
-    dispatch({ type: "UPDATE_FURNITURE", id: furnitureId, x, y })
+    const inMulti = multiSelection.some((s) => s.type === "furniture" && s.id === furnitureId)
+
+    if (inMulti && multiSelection.length > 1) {
+      // Multi-select drag: compute incremental delta and move all selected items
+      const deltaX = x - dragLastPosRef.current.x
+      const deltaY = y - dragLastPosRef.current.y
+      if (deltaX !== 0 || deltaY !== 0) {
+        dispatch({ type: "MOVE_SELECTED", offsetX: deltaX, offsetY: deltaY })
+        dragLastPosRef.current = { x, y }
+      }
+    } else {
+      // Single item drag
+      dispatch({ type: "UPDATE_FURNITURE", id: furnitureId, x, y })
+      dragLastPosRef.current = { x, y }
+    }
   }
 
   const handleFurnitureDragEnd = () => {
+    dragLastPosRef.current = null
     dispatch({ type: "END_DRAG" })
   }
 

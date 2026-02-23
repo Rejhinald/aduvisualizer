@@ -28,22 +28,29 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
 
     case "TOGGLE_SELECT": {
       // Ctrl+click behavior
-      const exists = state.multiSelection.some(
+      // If there's a single selection but no multi-selection, promote it first
+      let currentMulti = state.multiSelection
+      if (currentMulti.length === 0 && state.selection) {
+        currentMulti = [state.selection]
+      }
+
+      const exists = currentMulti.some(
         (s) => s.type === action.selection.type && s.id === action.selection.id
       )
 
       if (exists) {
         // Remove from selection
+        const newMulti = currentMulti.filter(
+          (s) => !(s.type === action.selection.type && s.id === action.selection.id)
+        )
         return {
           ...state,
-          multiSelection: state.multiSelection.filter(
-            (s) => !(s.type === action.selection.type && s.id === action.selection.id)
-          ),
-          selection: null,
+          multiSelection: newMulti,
+          selection: newMulti.length > 0 ? newMulti[newMulti.length - 1] : null,
         }
       } else {
         // Add to selection
-        const newMultiSelection = [...state.multiSelection, action.selection]
+        const newMultiSelection = [...currentMulti, action.selection]
         return {
           ...state,
           multiSelection: newMultiSelection,
@@ -590,6 +597,71 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         isDirty: true,
       }
 
+    case "UPDATE_LOT_OFFSET":
+      if (!state.lot) return state
+      return {
+        ...state,
+        lot: {
+          ...state.lot,
+          lotOffsetX: action.offsetX,
+          lotOffsetY: action.offsetY,
+        },
+        isDirty: true,
+      }
+
+    case "UPDATE_LOT_BOUNDARY":
+      if (!state.lot) return state
+      return {
+        ...state,
+        lot: {
+          ...state.lot,
+          boundary: action.boundary,
+          boundaryVertices: action.boundaryVertices ?? state.lot.boundaryVertices,
+        },
+        isDirty: true,
+      }
+
+    case "UPDATE_LOT_BOUNDARY_CORNER": {
+      if (!state.lot?.boundary) return state
+      const updatedBoundary = [...state.lot.boundary]
+      updatedBoundary[action.index] = action.point
+      return {
+        ...state,
+        lot: {
+          ...state.lot,
+          boundary: updatedBoundary,
+        },
+        isDirty: true,
+      }
+    }
+
+    case "ADD_LOT_BOUNDARY_CORNER": {
+      if (!state.lot?.boundary) return state
+      const expandedBoundary = [...state.lot.boundary]
+      expandedBoundary.splice(action.afterIndex + 1, 0, action.point)
+      return {
+        ...state,
+        lot: {
+          ...state.lot,
+          boundary: expandedBoundary,
+        },
+        isDirty: true,
+      }
+    }
+
+    case "REMOVE_LOT_BOUNDARY_CORNER": {
+      if (!state.lot?.boundary || state.lot.boundary.length <= 3) return state
+      const trimmedBoundary = state.lot.boundary.filter((_, i) => i !== action.index)
+      return {
+        ...state,
+        lot: {
+          ...state.lot,
+          boundary: trimmedBoundary,
+        },
+        isDirty: true,
+      }
+    }
+
     // ADU Boundary actions
     case "SET_ADU_BOUNDARY_SIZE": {
       const clampedArea = Math.max(ADU_SIZE_MIN, Math.min(ADU_SIZE_MAX, action.targetArea))
@@ -892,6 +964,16 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         itemsToMove.filter((s) => s.type === "corner").map((s) => s.id)
       )
 
+      // Also include corners of selected walls (so walls actually move)
+      const selectedWallIds = itemsToMove.filter((s) => s.type === "wall").map((s) => s.id)
+      for (const wallId of selectedWallIds) {
+        const wall = state.walls.find((w) => w.id === wallId)
+        if (wall) {
+          cornerIds.add(wall.startCornerId)
+          cornerIds.add(wall.endCornerId)
+        }
+      }
+
       // Get selected furniture IDs
       const furnitureIds = new Set(
         itemsToMove.filter((s) => s.type === "furniture").map((s) => s.id)
@@ -933,6 +1015,17 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       const cornerIds = new Set(
         itemsToRotate.filter((s) => s.type === "corner").map((s) => s.id)
       )
+
+      // Also include corners of selected walls
+      const selectedRotateWallIds = itemsToRotate.filter((s) => s.type === "wall").map((s) => s.id)
+      for (const wallId of selectedRotateWallIds) {
+        const wall = state.walls.find((w) => w.id === wallId)
+        if (wall) {
+          cornerIds.add(wall.startCornerId)
+          cornerIds.add(wall.endCornerId)
+        }
+      }
+
       const furnitureIds = new Set(
         itemsToRotate.filter((s) => s.type === "furniture").map((s) => s.id)
       )

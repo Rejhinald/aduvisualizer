@@ -182,6 +182,12 @@ export interface Setbacks {
 // Lot source
 export type LotSource = "gis" | "manual"
 
+// Geographic vertex (lat/lng from GIS)
+export interface GeoVertex {
+  lat: number
+  lng: number
+}
+
 // Lot
 export interface Lot {
   id: string
@@ -193,6 +199,9 @@ export interface Lot {
   geoLat?: number
   geoLng?: number
   boundary?: Point[] // in feet
+  boundaryVertices?: GeoVertex[] // geo lat/lng from GIS (for satellite alignment)
+  lotOffsetX?: number // lot position relative to ADU origin (feet)
+  lotOffsetY?: number // lot position relative to ADU origin (feet)
   setbacks: Setbacks
   source: LotSource
   createdAt?: string
@@ -578,6 +587,9 @@ export async function createLot(data: {
   geoLat?: number
   geoLng?: number
   boundary?: Point[]
+  boundaryVertices?: GeoVertex[]
+  lotOffsetX?: number
+  lotOffsetY?: number
   setbacks?: Setbacks
   source?: LotSource
 }): Promise<ApiResponse<Lot>> {
@@ -599,6 +611,9 @@ export async function updateLot(lotId: string, data: {
   geoLat?: number
   geoLng?: number
   boundary?: Point[]
+  boundaryVertices?: GeoVertex[]
+  lotOffsetX?: number
+  lotOffsetY?: number
   setbacks?: Setbacks
   source?: LotSource
 }): Promise<ApiResponse<Lot>> {

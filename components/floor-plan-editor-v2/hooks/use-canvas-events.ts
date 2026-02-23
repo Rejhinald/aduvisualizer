@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback } from "react"
+import { useCallback, useRef } from "react"
 import type { EditorState, EditorAction, Point, Corner, Wall } from "../types"
 import { PIXELS_PER_FOOT, DIMENSIONS, DOOR_TYPES, WINDOW_TYPES } from "../constants"
 
@@ -206,6 +206,12 @@ function findWallAtPoint(
 }
 
 export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvasEventsProps) {
+  // Keep a ref to the latest state to avoid stale closures in event handlers.
+  // React-konva event listeners may not update between rapid state changes,
+  // so reading from a ref guarantees the handler sees current state.
+  const stateRef = useRef(state)
+  stateRef.current = state
+
   /**
    * Convert stage-relative coordinates to world coordinates (feet)
    * Use this with stage.getRelativePointerPosition() which already accounts for stage transform
@@ -546,6 +552,7 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
       }
 
       // Select mode: start selection box when clicking on empty canvas
+      // Room fills have listening={false} in select mode so clicks pass through to Stage
       if (state.mode === "select" && e.target === stage) {
         dispatch({ type: "START_SELECTION_BOX", point: worldPoint })
       }
@@ -648,10 +655,15 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
    */
   const handleCanvasMouseUp = useCallback(
     (e: any) => {
+      // Read latest state from ref to avoid stale closure issues.
+      // React-konva may not update event handlers between rapid state changes,
+      // so the closure's `state` could be from before the selection box started.
+      const currentState = stateRef.current
+
       // Handle selection box completion
-      if (state.isSelectionBoxActive && state.selectionBoxStart && state.selectionBoxEnd) {
-        const start = state.selectionBoxStart
-        const end = state.selectionBoxEnd
+      if (currentState.isSelectionBoxActive && currentState.selectionBoxStart && currentState.selectionBoxEnd) {
+        const start = currentState.selectionBoxStart
+        const end = currentState.selectionBoxEnd
 
         // Calculate bounding box
         const box = {
@@ -668,15 +680,15 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
         if (boxWidth > 0.5 || boxHeight > 0.5) {
           // Create corner lookup map
           const cornerMap = new Map<string, { x: number; y: number }>()
-          state.corners.forEach((c) => cornerMap.set(c.id, { x: c.x, y: c.y }))
+          currentState.corners.forEach((c) => cornerMap.set(c.id, { x: c.x, y: c.y }))
 
           // Find all corners in box
-          const selectedCorners = state.corners.filter((c) =>
+          const selectedCorners = currentState.corners.filter((c) =>
             isPointInBox({ x: c.x, y: c.y }, box)
           )
 
           // Find all walls where at least one endpoint is in box
-          const selectedWalls = state.walls.filter((wall) => {
+          const selectedWalls = currentState.walls.filter((wall) => {
             const startCorner = cornerMap.get(wall.startCornerId)
             const endCorner = cornerMap.get(wall.endCornerId)
             if (!startCorner || !endCorner) return false
@@ -689,11 +701,11 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
           })
 
           // Find doors/windows on selected walls or whose position is in box
-          const selectedDoors = state.doors.filter((door) => {
+          const selectedDoors = currentState.doors.filter((door) => {
             // Check if door's wall is selected
             if (selectedWalls.some((w) => w.id === door.wallId)) return true
             // Calculate door position and check if in box
-            const wall = state.walls.find((w) => w.id === door.wallId)
+            const wall = currentState.walls.find((w) => w.id === door.wallId)
             if (!wall) return false
             const startCorner = cornerMap.get(wall.startCornerId)
             const endCorner = cornerMap.get(wall.endCornerId)
@@ -703,11 +715,11 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
             return isPointInBox({ x: doorX, y: doorY }, box)
           })
 
-          const selectedWindows = state.windows.filter((window) => {
+          const selectedWindows = currentState.windows.filter((window) => {
             // Check if window's wall is selected
             if (selectedWalls.some((w) => w.id === window.wallId)) return true
             // Calculate window position and check if in box
-            const wall = state.walls.find((w) => w.id === window.wallId)
+            const wall = currentState.walls.find((w) => w.id === window.wallId)
             if (!wall) return false
             const startCorner = cornerMap.get(wall.startCornerId)
             const endCorner = cornerMap.get(wall.endCornerId)
@@ -718,7 +730,7 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
           })
 
           // Find all furniture in box (check center point)
-          const selectedFurniture = state.furniture.filter((f) =>
+          const selectedFurniture = currentState.furniture.filter((f) =>
             isPointInBox({ x: f.x, y: f.y }, box)
           )
 
@@ -745,23 +757,23 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
         return
       }
 
-      if (state.mode === "rectangle" && state.isDrawing && state.drawingStart) {
+      if (currentState.mode === "rectangle" && currentState.isDrawing && currentState.drawingStart) {
         const stage = e.target.getStage()
         // Use getRelativePointerPosition() which accounts for stage transform (pan/zoom)
         const relativePos = stage.getRelativePointerPosition()
         if (!relativePos) return
 
         const worldPoint = stageToWorld(relativePos.x, relativePos.y)
-        const snappedPoint = snapToGrid(worldPoint, state.snapToGrid)
+        const snappedPoint = snapToGrid(worldPoint, currentState.snapToGrid)
 
         // For end point, try to snap to existing corner first (using worldPoint for detection)
-        const nearbyEndCorner = findNearbyCorner(worldPoint, state.corners, CLOSE_POLYGON_THRESHOLD)
+        const nearbyEndCorner = findNearbyCorner(worldPoint, currentState.corners, CLOSE_POLYGON_THRESHOLD)
         const endPoint = nearbyEndCorner
           ? { x: nearbyEndCorner.x, y: nearbyEndCorner.y }
           : snappedPoint
 
         // Create 4 corners and 4 walls for rectangle
-        const start = state.drawingStart
+        const start = currentState.drawingStart
         const end = endPoint
 
         // Define the 4 corner points
@@ -778,8 +790,8 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
         const newCorners: Array<{ id: string; x: number; y: number; elevation: number }> = []
 
         // First pass: identify which corners to create and which to reuse
-        // We use state.corners plus any new corners we've decided to create
-        let currentCorners = [...state.corners]
+        // We use currentState.corners plus any new corners we've decided to create
+        let currentCorners = [...currentState.corners]
 
         points.forEach((point) => {
           // Check for existing corner (including ones we're about to create)
@@ -822,7 +834,7 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
           if (startId === endId) return
 
           // Check if wall already exists in state
-          const wallExists = state.walls.some(
+          const wallExists = currentState.walls.some(
             (w) =>
               (w.startCornerId === startId && w.endCornerId === endId) ||
               (w.startCornerId === endId && w.endCornerId === startId)
@@ -833,7 +845,7 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
               type: "ADD_WALL",
               wall: {
                 id: generateTempId(),
-                blueprintId: state.blueprintId || "",
+                blueprintId: currentState.blueprintId || "",
                 startCornerId: startId,
                 endCornerId: endId,
                 thickness: DIMENSIONS.WALL_THICKNESS,
@@ -847,7 +859,7 @@ export function useCanvasEvents({ state, dispatch, zoom, panX, panY }: UseCanvas
         dispatch({ type: "END_DRAWING" })
       }
     },
-    [state, dispatch, stageToWorld]
+    [dispatch, stageToWorld]
   )
 
   /**

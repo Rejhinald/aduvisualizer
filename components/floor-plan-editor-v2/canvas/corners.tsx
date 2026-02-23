@@ -11,6 +11,9 @@ const MERGE_THRESHOLD = 0.75
 export function CornersLayer({ config, state, dispatch }: CanvasProps) {
   const { zoom } = config
   const { corners, walls, selection, multiSelection, hoveredElement, mode } = state
+
+  // Track last drag position for computing incremental deltas in multi-drag
+  const dragLastPosRef = useRef<{ x: number; y: number } | null>(null)
   // Don't multiply by zoom here - Stage already handles zoom via scaleX/scaleY
   const scale = PIXELS_PER_FOOT
 
@@ -98,11 +101,20 @@ export function CornersLayer({ config, state, dispatch }: CanvasProps) {
 
     draggingCornerRef.current = cornerId
     const pos = e.target.position()
+    const worldX = pos.x / scale
+    const worldY = pos.y / scale
+    dragLastPosRef.current = { x: worldX, y: worldY }
+
     dispatch({
       type: "START_DRAG",
-      point: { x: pos.x / scale, y: pos.y / scale },
+      point: { x: worldX, y: worldY },
     })
-    dispatch({ type: "SELECT", selection: { type: "corner", id: cornerId } })
+
+    // Don't clear multi-selection if this corner is already part of it
+    const inMulti = multiSelection.some((s) => s.type === "corner" && s.id === cornerId)
+    if (!inMulti) {
+      dispatch({ type: "SELECT", selection: { type: "corner", id: cornerId } })
+    }
   }
 
   const handleCornerDragMove = (cornerId: string, e: any) => {
@@ -112,42 +124,55 @@ export function CornersLayer({ config, state, dispatch }: CanvasProps) {
     let x = pos.x / scale
     let y = pos.y / scale
 
-    // Check for nearby corner to show merge preview
-    const nearbyCorner = findNearbyCorner({ x, y }, cornerId)
-    if (nearbyCorner) {
-      // Snap to nearby corner position for visual feedback
-      x = nearbyCorner.x
-      y = nearbyCorner.y
-      e.target.position({
-        x: x * scale,
-        y: y * scale,
-      })
-    } else if (state.snapToGrid) {
-      // Snap to grid if enabled
-      x = Math.round(x * 2) / 2 // Snap to 0.5 feet
-      y = Math.round(y * 2) / 2
-      e.target.position({
-        x: x * scale,
-        y: y * scale,
-      })
-    }
+    const inMulti = multiSelection.some((s) => s.type === "corner" && s.id === cornerId)
+    const isMultiDrag = inMulti && multiSelection.length > 1
 
-    dispatch({ type: "UPDATE_CORNER", id: cornerId, x, y })
+    // Check for nearby corner to show merge preview (only for single drag)
+    if (!isMultiDrag) {
+      const nearbyCorner = findNearbyCorner({ x, y }, cornerId)
+      if (nearbyCorner) {
+        x = nearbyCorner.x
+        y = nearbyCorner.y
+        e.target.position({ x: x * scale, y: y * scale })
+      } else if (state.snapToGrid) {
+        x = Math.round(x * 2) / 2
+        y = Math.round(y * 2) / 2
+        e.target.position({ x: x * scale, y: y * scale })
+      }
+      dispatch({ type: "UPDATE_CORNER", id: cornerId, x, y })
+    } else if (dragLastPosRef.current) {
+      // Multi-select drag: snap and compute incremental delta
+      if (state.snapToGrid) {
+        x = Math.round(x * 2) / 2
+        y = Math.round(y * 2) / 2
+        e.target.position({ x: x * scale, y: y * scale })
+      }
+      const deltaX = x - dragLastPosRef.current.x
+      const deltaY = y - dragLastPosRef.current.y
+      if (deltaX !== 0 || deltaY !== 0) {
+        dispatch({ type: "MOVE_SELECTED", offsetX: deltaX, offsetY: deltaY })
+        dragLastPosRef.current = { x, y }
+      }
+    }
   }
 
   const handleCornerDragEnd = (cornerId: string, e: any) => {
-    const pos = e.target.position()
-    const x = pos.x / scale
-    const y = pos.y / scale
+    const inMulti = multiSelection.some((s) => s.type === "corner" && s.id === cornerId)
+    const isMultiDrag = inMulti && multiSelection.length > 1
 
-    // Check if dropped on another corner - merge them
-    const nearbyCorner = findNearbyCorner({ x, y }, cornerId)
-    if (nearbyCorner) {
-      // Merge the dragged corner into the nearby corner
-      dispatch({ type: "MERGE_CORNERS", sourceId: cornerId, targetId: nearbyCorner.id })
+    // Only check merge for single corner drag
+    if (!isMultiDrag) {
+      const pos = e.target.position()
+      const x = pos.x / scale
+      const y = pos.y / scale
+      const nearbyCorner = findNearbyCorner({ x, y }, cornerId)
+      if (nearbyCorner) {
+        dispatch({ type: "MERGE_CORNERS", sourceId: cornerId, targetId: nearbyCorner.id })
+      }
     }
 
     draggingCornerRef.current = null
+    dragLastPosRef.current = null
     dispatch({ type: "END_DRAG" })
   }
 

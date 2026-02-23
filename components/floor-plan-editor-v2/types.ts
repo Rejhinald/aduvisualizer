@@ -240,6 +240,11 @@ export type EditorAction =
 
   // Lot actions
   | { type: "SET_LOT"; lot: Lot | null }
+  | { type: "UPDATE_LOT_OFFSET"; offsetX: number; offsetY: number }
+  | { type: "UPDATE_LOT_BOUNDARY"; boundary: Point[]; boundaryVertices?: Array<{ lat: number; lng: number }> }
+  | { type: "UPDATE_LOT_BOUNDARY_CORNER"; index: number; point: Point }
+  | { type: "ADD_LOT_BOUNDARY_CORNER"; afterIndex: number; point: Point }
+  | { type: "REMOVE_LOT_BOUNDARY_CORNER"; index: number }
 
   // ADU Boundary actions
   | { type: "SET_ADU_BOUNDARY_SIZE"; targetArea: number }

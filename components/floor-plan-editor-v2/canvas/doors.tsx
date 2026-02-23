@@ -115,7 +115,11 @@ export function DoorsLayer({ config, state, dispatch }: CanvasProps) {
       return
     }
     setIsDragging(true)
-    dispatch({ type: "SELECT", selection: { type: "door", id: doorId } })
+    // Don't clear multi-selection if this door is already part of it
+    const inMulti = multiSelection.some((s) => s.type === "door" && s.id === doorId)
+    if (!inMulti) {
+      dispatch({ type: "SELECT", selection: { type: "door", id: doorId } })
+    }
   }
 
   const handleDoorDragMove = (door: DoorOnWall, e: any) => {
@@ -200,7 +204,7 @@ export function DoorsLayer({ config, state, dispatch }: CanvasProps) {
             x={x}
             y={y}
             rotation={angle}
-            draggable={mode === "select"}
+            draggable={mode === "select" && !(multiSelection.length > 1 && multiSelection.some((s) => s.type === "door" && s.id === door.id))}
             onClick={(e) => handleDoorClick(door.id, e)}
             onTap={(e) => handleDoorClick(door.id, e)}
             onDblClick={(e) => handleDoorDoubleClick(door.id, e)}
